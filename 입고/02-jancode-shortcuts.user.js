@@ -6,8 +6,8 @@
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/store/jancode*
 // @match        *://platform.co.jp/admin/store/jancode*
-// @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/입고/01-tracking-modal.user.js
-// @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/입고/01-tracking-modal.user.js
+// @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/입고/02-jancode-shortcuts.user.js
+// @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/입고/02-jancode-shortcuts.user.js
 // @grant        none
 // @run-at       document-end
 // ==/UserScript==
