@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         [입고] JAN코드 화면 단축키 통합 (JAN이동 + Enter이동 + F1/F2/F3)
-// @namespace    https://github.com/YOUR_ID/tampermonkey-scripts
+// @namespace    https://github.com/asics67-lab/tampermonkey-scripts
 // @version      1.0.0
 // @description  jancode 페이지 통합본. 원본: A-1-9(JAN 검색이동) + A-1-6(Enter 행이동) + A-1-7(F3) + A-1-8(F1) + A-1-10(F2)
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/store/jancode*
 // @match        *://platform.co.jp/admin/store/jancode*
-// @updateURL    https://raw.githubusercontent.com/YOUR_ID/tampermonkey-scripts/main/입고/02-jancode-shortcuts.user.js
-// @downloadURL  https://raw.githubusercontent.com/YOUR_ID/tampermonkey-scripts/main/입고/02-jancode-shortcuts.user.js
+// @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/입고/01-tracking-modal.user.js
+// @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/입고/01-tracking-modal.user.js
 // @grant        none
 // @run-at       document-end
 // ==/UserScript==
