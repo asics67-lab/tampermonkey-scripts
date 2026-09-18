@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.1
+// @version      1.3.2
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -67,6 +67,16 @@
  *    이 설정 없이 페이지가 다 그려진 뒤 실행되던 것이었는데, 합치면서 충돌함). 이 블록의
  *    UI 생성 전체를 document.body가 준비된 뒤에만 실행하도록 수정. 이 에러 때문에 이
  *    블록의 "포장완료 버튼 위 총 수량 합계" 기능 자체가 전혀 동작하지 않고 있었습니다.
+ *
+ *  v1.3.2 버그 수정 (진짜 근본 원인 — 실제 페이지 소스 확인 후 발견)
+ *  - [블록 1] 사이트의 "포장 진행" 버튼은 클릭 시 서버에 AJAX로 데이터를 요청하고,
+ *    그 응답이 와야 비로소 모달이 열리는 구조입니다. 그런데 자동 클릭 로직이 이 응답을
+ *    기다리는 중인지 확인하지 않고 200ms마다 같은 버튼을 계속 또 클릭했습니다. 서버
+ *    응답이 200ms 안에 오지 않는 경우(네트워크 지연 등) 같은 요청이 여러 번 겹쳐서
+ *    나가고, 응답이 도착할 때마다 모달 내용이 다시 그려지면서 화면이 깜빡이고 계속
+ *    바뀌는 것처럼 보이는 진짜 원인이었습니다. ("가끔씩" 발생한 것도 응답 지연이
+ *    있을 때만 증상이 심해졌기 때문으로 설명됨). 이제 버튼은 스캔 1건당 딱 한 번만
+ *    클릭하고, 이후에는 재클릭 없이 모달이 열릴 때까지(최대 약 5초) 기다리기만 합니다.
  * ============================================================
  */
 
@@ -96,45 +106,68 @@
      * 1. 포장 진행 버튼 클릭 로직 (반응 속도 개선)
      */
     function triggerPackingClick() {
-        const rows = document.querySelectorAll('#packingListTbody tr');
         const isScanning = sessionStorage.getItem('qr_scanning_active');
+        if (isScanning !== 'true') return;
 
-        if (rows.length > 0 && isScanning === 'true') {
-            if (isModalOpen()) {
-                sessionStorage.removeItem('qr_scanning_active');
-                window.clickRetryCount = 0;
-                return;
-            }
-
-            // [버그 수정] 검색 결과가 정확히 1건일 때만 자동 클릭합니다.
-            // 여러 건이 검색되면 어떤 게 의도한 주문인지 알 수 없어 잘못된
-            // 포장화면(다른 출고건)이 열리는 원인이 되므로, 이 경우 사람이
-            // 직접 목록에서 골라 클릭하도록 자동 클릭을 하지 않습니다.
-            if (rows.length > 1) {
-                console.log('[Speed-Scan] 검색 결과가 ' + rows.length + '건이라 자동 클릭을 건너뜁니다. 직접 선택해 주세요.');
-                sessionStorage.removeItem('qr_scanning_active');
-                window.clickRetryCount = 0;
-                return;
-            }
-
-            const packingBtn = rows[0].querySelector('button.packing-btn');
-            if (!packingBtn) return;
-
-            if (window.jQuery) {
-                window.jQuery(packingBtn).trigger('click');
-            } else {
-                packingBtn.click();
-            }
-
-            if (!window.clickRetryCount) window.clickRetryCount = 0;
-            if (window.clickRetryCount < 10) { // 시도 횟수를 늘려 확실하게 오픈
-                window.clickRetryCount++;
-                setTimeout(triggerPackingClick, 200); // 체크 주기를 200ms로 단축
-            } else {
-                window.clickRetryCount = 0;
-                sessionStorage.removeItem('qr_scanning_active');
-            }
+        if (isModalOpen()) {
+            sessionStorage.removeItem('qr_scanning_active');
+            window.clickRetryCount = 0;
+            window.packingClickDispatched = false;
+            return;
         }
+
+        // [v1.3.2 버그 수정] 포장 진행 버튼 클릭은 사이트 자체적으로 서버에 데이터를
+        // 요청(AJAX)한 뒤 응답이 와야 모달이 열리는 구조입니다. 응답이 200ms 안에 항상
+        // 오는 게 아닌데, 기존 코드는 응답을 기다리는 중인지 확인 없이 200ms마다 같은
+        // 버튼을 계속 또 클릭했습니다. 그 결과 서버에 같은 요청이 여러 번 겹쳐서 나가고,
+        // 응답이 도착할 때마다 모달 내용이 다시 그려지면서 화면이 깜빡이고 계속 바뀌는
+        // 것처럼 보이는 원인이 됐습니다. 이제 버튼은 딱 한 번만 클릭하고, 그 다음부터는
+        // 재클릭 없이 응답(모달 오픈)이 올 때까지 기다리기만 합니다.
+        if (window.packingClickDispatched) {
+            if (!window.clickRetryCount) window.clickRetryCount = 0;
+            if (window.clickRetryCount < 25) { // 최대 약 5초까지 응답 대기 (재클릭 없음)
+                window.clickRetryCount++;
+                setTimeout(triggerPackingClick, 200);
+            } else {
+                // 5초 넘게 응답이 없으면 포기 (서버 지연/오류 등)
+                console.log('[Speed-Scan] 서버 응답이 5초 이상 없어 자동 오픈을 포기합니다.');
+                window.clickRetryCount = 0;
+                window.packingClickDispatched = false;
+                sessionStorage.removeItem('qr_scanning_active');
+            }
+            return;
+        }
+
+        const rows = document.querySelectorAll('#packingListTbody tr');
+        if (rows.length === 0) {
+            sessionStorage.removeItem('qr_scanning_active');
+            return;
+        }
+
+        // [버그 수정] 검색 결과가 정확히 1건일 때만 자동 클릭합니다.
+        // 여러 건이 검색되면 어떤 게 의도한 주문인지 알 수 없어 잘못된
+        // 포장화면(다른 출고건)이 열리는 원인이 되므로, 이 경우 사람이
+        // 직접 목록에서 골라 클릭하도록 자동 클릭을 하지 않습니다.
+        if (rows.length > 1) {
+            console.log('[Speed-Scan] 검색 결과가 ' + rows.length + '건이라 자동 클릭을 건너뜁니다. 직접 선택해 주세요.');
+            sessionStorage.removeItem('qr_scanning_active');
+            window.clickRetryCount = 0;
+            return;
+        }
+
+        const packingBtn = rows[0].querySelector('button.packing-btn');
+        if (!packingBtn) return;
+
+        // 클릭은 여기서 딱 한 번만 보냅니다.
+        window.packingClickDispatched = true;
+        if (window.jQuery) {
+            window.jQuery(packingBtn).trigger('click');
+        } else {
+            packingBtn.click();
+        }
+
+        window.clickRetryCount = 0;
+        setTimeout(triggerPackingClick, 200);
     }
 
     /**
@@ -169,6 +202,7 @@
 
             sessionStorage.setItem('qr_scanning_active', 'true');
             window.clickRetryCount = 0;
+            window.packingClickDispatched = false;
             form.submit();
             finalString = "";
         }
