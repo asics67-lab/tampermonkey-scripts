@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] 트래킹넘버 모달 통합 (마스터패치본 + 회원명고정 + 하이픈표시 + JAN강조)
-// @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.1.0
+// @namespace    https://github.com/YOUR_ID/tampermonkey-scripts
+// @version      1.2.0
 // @description  입고 처리 모달(trackingno) 및 라벨 인쇄(locationlabel) 화면 통합본. 원본: A-1-13(베이스) + A-1-2(회원명 고정) + A-1-3(하이픈 표시) + A-1-12 중 입고 JAN강조 발췌
 // @author       물류팀
 // @match        https://platform.aispel.com/admin/store/trackingno*
@@ -9,8 +9,8 @@
 // @match        *://platform.aispel.com/admin/print/locationlabel/*
 // @match        *://www.platform.co.jp/admin/print/locationlabel/*
 // @require      https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js
-// @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/입고/01-tracking-modal.user.js
-// @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/입고/01-tracking-modal.user.js
+// @updateURL    https://raw.githubusercontent.com/YOUR_ID/tampermonkey-scripts/main/입고/01-tracking-modal.user.js
+// @downloadURL  https://raw.githubusercontent.com/YOUR_ID/tampermonkey-scripts/main/입고/01-tracking-modal.user.js
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
@@ -535,6 +535,59 @@
             }
         }
 
+        // [테스트] 입고 완료 하트 팝업 - 화면 전면에 하트가 커지며 나타났다가 사라짐
+        function showSuccessHeartPopup() {
+            if (!document.getElementById('heart-popup-style')) {
+                const style = document.createElement('style');
+                style.id = 'heart-popup-style';
+                style.innerHTML = `
+                    @keyframes heartPopIn {
+                        0%   { transform: scale(0) rotate(-15deg); opacity: 0; }
+                        55%  { transform: scale(1.25) rotate(6deg); opacity: 1; }
+                        75%  { transform: scale(0.95) rotate(-3deg); opacity: 1; }
+                        100% { transform: scale(1.05) rotate(0deg); opacity: 1; }
+                    }
+                    @keyframes heartFadeOut {
+                        0%   { transform: scale(1.05); opacity: 1; }
+                        100% { transform: scale(1.3); opacity: 0; }
+                    }
+                    #heart-popup-overlay {
+                        position: fixed;
+                        inset: 0;
+                        z-index: 2147483647;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        pointer-events: none;
+                    }
+                    #heart-popup-overlay .heart-shape {
+                        font-size: 220px;
+                        line-height: 1;
+                        color: #ff4d6d;
+                        filter: drop-shadow(0 6px 18px rgba(255, 77, 109, 0.55));
+                        animation: heartPopIn 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+                    }
+                    #heart-popup-overlay .heart-shape.fade-out {
+                        animation: heartFadeOut 0.35s ease-in forwards;
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+
+            document.querySelectorAll('#heart-popup-overlay').forEach(el => el.remove());
+
+            const overlay = document.createElement('div');
+            overlay.id = 'heart-popup-overlay';
+            overlay.innerHTML = '<div class="heart-shape">❤️</div>';
+            document.body.appendChild(overlay);
+
+            const heartEl = overlay.querySelector('.heart-shape');
+            setTimeout(() => {
+                heartEl.classList.add('fade-out');
+                setTimeout(() => overlay.remove(), 400);
+            }, 550);
+        }
+
         async function executeScanSubmit($input) {
             let tracking_no = $input.val().trim();
             if (!tracking_no) return;
@@ -587,6 +640,8 @@
                         const labelHtmlSource = generateCustomLabelHTML(labelsDataStack, tracking_no);
                         win.document.open(); win.document.write(labelHtmlSource); win.document.close();
                     } else if (win) { win.close(); }
+                    // [테스트] 입고 완료 시 화면 전면에 하트 팝업 표시
+                    showSuccessHeartPopup();
                     $input.val('').focus();
                     resetAllSelectionStore();
                     isStoreModalScanning = false;
