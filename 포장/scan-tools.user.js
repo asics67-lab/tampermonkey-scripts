@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.2.1
+// @version      1.3.0
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -50,6 +50,15 @@
  *  - [블록 2] 스캔 횟수가 원래 주문 수량을 넘으면 배지가 빨간색 "⚠ 과다스캔"으로 바뀌고 경고음
  *  - [블록 2] 같은 트래킹번호를 가진 행끼리 왼쪽 색 테두리로 상자 단위를 한눈에 구분
  *    (LS/OS처럼 트래킹이 없는 건은 색 없음 — 로케이션 합산 표시 그대로 유지)
+ *
+ *  v1.3.0 버그 수정 (포장 담당자 보고: "화면이 자꾸 깜빡이고 다른 출고건 화면으로 계속 바뀐다")
+ *  - [블록 1] stealthSubmit()에 중복 제출 방지 가드 추가. 이전 스캔이 아직 처리 중(페이지
+ *    이동/모달 오픈 대기)인데 스캔이 또 들어오면, 겹쳐서 검색이 제출되어 페이지가 짧은 시간에
+ *    여러 번 새로고침되며 깜빡이던 문제를 막습니다. 처리 중일 때 들어온 스캔은 무시합니다.
+ *  - [블록 1] triggerPackingClick()이 검색 결과 중 무조건 첫 번째 행을 자동 클릭하던 문제
+ *    수정. 이제 검색 결과가 정확히 1건일 때만 자동 클릭하고, 여러 건이 검색되면(스캔값이
+ *    여러 주문과 부분 일치하는 경우) 자동 클릭을 하지 않습니다 — 의도와 다른 출고건의
+ *    포장화면이 열리던 원인이었습니다.
  * ============================================================
  */
 
@@ -79,14 +88,29 @@
      * 1. 포장 진행 버튼 클릭 로직 (반응 속도 개선)
      */
     function triggerPackingClick() {
-        const packingBtn = document.querySelector('#packingListTbody button.packing-btn');
+        const rows = document.querySelectorAll('#packingListTbody tr');
         const isScanning = sessionStorage.getItem('qr_scanning_active');
 
-        if (packingBtn && isScanning === 'true') {
+        if (rows.length > 0 && isScanning === 'true') {
             if (isModalOpen()) {
                 sessionStorage.removeItem('qr_scanning_active');
+                window.clickRetryCount = 0;
                 return;
             }
+
+            // [버그 수정] 검색 결과가 정확히 1건일 때만 자동 클릭합니다.
+            // 여러 건이 검색되면 어떤 게 의도한 주문인지 알 수 없어 잘못된
+            // 포장화면(다른 출고건)이 열리는 원인이 되므로, 이 경우 사람이
+            // 직접 목록에서 골라 클릭하도록 자동 클릭을 하지 않습니다.
+            if (rows.length > 1) {
+                console.log('[Speed-Scan] 검색 결과가 ' + rows.length + '건이라 자동 클릭을 건너뜁니다. 직접 선택해 주세요.');
+                sessionStorage.removeItem('qr_scanning_active');
+                window.clickRetryCount = 0;
+                return;
+            }
+
+            const packingBtn = rows[0].querySelector('button.packing-btn');
+            if (!packingBtn) return;
 
             if (window.jQuery) {
                 window.jQuery(packingBtn).trigger('click');
@@ -110,6 +134,16 @@
      */
     function stealthSubmit() {
         if (isModalOpen()) return;
+
+        // [버그 수정] 이전 스캔이 아직 처리 중(페이지 이동/모달 오픈 대기)이면
+        // 새 검색을 또 제출하지 않습니다. 겹쳐서 제출되면 페이지가 짧은 시간에
+        // 여러 번 새로고침되면서 화면이 깜빡이고, 의도와 다른 주문 화면이
+        // 열리는 원인이 됩니다.
+        if (sessionStorage.getItem('qr_scanning_active') === 'true') {
+            console.log('[Speed-Scan] 이전 스캔 처리 중이라 이번 스캔은 건너뜁니다:', finalString.trim());
+            finalString = "";
+            return;
+        }
 
         const cleanedString = finalString.trim();
         if (cleanedString.length === 0) return;
