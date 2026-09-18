@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [관리] 재고관리 통합 도구 (통관방식조회 + 다나오로시 + FL로케이션현황)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.1.0
+// @version      1.2.0
 // @description  재고관리(settlement/stock) 및 로케이션 조회 화면 통합본. 원본: 재고관리 통관방식 조회 v3.1 + 구매대행 다나오로시 출력본 v24.1(엑셀 합산/구분선 버그 수정) + FL 로케이션 사용 현황 v11.5
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/settlement/stock*
@@ -31,6 +31,15 @@
  *    원인: 화면 표시(renderTableRows)는 getGroupedRows()로 먼저 병합한 데이터를 쓰는데,
  *    엑셀 생성(generateExcelBlob)은 병합 없이 정렬만 된 원본 데이터를 썼던 것이 원인이었음.
  *    엑셀 생성도 동일하게 getGroupedRows()를 거치도록 수정하여 화면과 결과가 일치하도록 함.
+ *
+ *  v1.2.0 수정 사항
+ *  - v1.1.0으로도 같은 증상이 재현되어 재조사한 결과, 진짜 원인은 따로 있었음.
+ *    원본 사이트의 로케이션 텍스트가 "G1-2-1 : 10개"처럼 콜론 뒤에 부가정보가 붙어서
+ *    넘어오는 경우가 있어, 같은 자리(G1-2-1)인데도 뒤에 붙은 숫자가 다르면 문자열
+ *    자체가 달라져 병합/구분선 판정에서 서로 다른 위치로 인식됐음.
+ *    이제 로케이션 값을 저장할 때 콜론(:) 뒤는 잘라내고 순수 로케이션 코드만
+ *    기준으로 쓰도록 수정하여, 진짜 같은 자리면 항상 합쳐지고 구분선도 로케이션이
+ *    실제로 바뀔 때만 그어지도록 함.
  * ============================================================
  */
 
@@ -447,9 +456,16 @@
                     const janCode = $row.find('td:nth-child(5)').text().trim();
                     const productName = $row.find('td:nth-child(6)').text().trim();
                     const quantity = parseInt($row.find('td:nth-child(7)').text().trim()) || 0;
-                    const location = $row.find('td:nth-child(11)').text().trim();
+                    const rawLocation = $row.find('td:nth-child(11)').text().trim();
 
-                    if (location) {
+                    if (rawLocation) {
+                        // [v1.2.0 수정] 원본 사이트의 로케이션 텍스트에 "G1-2-1 : 10개"처럼
+                        // 콜론 뒤에 부가정보(박스당 개수 등)가 붙어 나오는 경우가 있어,
+                        // 이 부분을 그대로 비교하면 같은 자리인데도 문자열이 달라서
+                        // 병합이 안 되고 구분선도 엉뚱하게 그어지는 문제가 있었습니다.
+                        // 콜론 뒤는 잘라내고 순수 로케이션 코드만 기준으로 사용합니다.
+                        const location = rawLocation.replace(/[:：].*$/, '').trim() || rawLocation;
+
                         let zone = location.charAt(0).toUpperCase();
 
                         if (!/[A-Z]/.test(zone)) {
