@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.2
+// @version      1.4.1
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -77,6 +77,13 @@
  *    바뀌는 것처럼 보이는 진짜 원인이었습니다. ("가끔씩" 발생한 것도 응답 지연이
  *    있을 때만 증상이 심해졌기 때문으로 설명됨). 이제 버튼은 스캔 1건당 딱 한 번만
  *    클릭하고, 이후에는 재클릭 없이 모달이 열릴 때까지(최대 약 5초) 기다리기만 합니다.
+ *
+ *  v1.4.1 수정 사항
+ *  - 포장 진행 자동 오픈: 첫 클릭 후 모달 오픈을 확인하고, 열리지 않으면 안전하게 재시도합니다.
+ *  - 검색 결과가 여러 건이어도 스캔값과 정확히 일치하는 행이 1건이면 해당 행을 자동 오픈합니다.
+ *  - 스캔값을 sessionStorage에 보관하여 페이지 갱신 뒤에도 대상 행을 찾습니다.
+ *  - 포장 테이블만 MutationObserver로 감시하여 불필요한 전체 페이지 갱신을 줄입니다.
+ *  - refreshTableStyle()를 debounce하고 자체 DOM 변경에 의한 연쇄 refresh를 차단합니다.
  * ============================================================
  */
 
@@ -106,68 +113,96 @@
      * 1. 포장 진행 버튼 클릭 로직 (반응 속도 개선)
      */
     function triggerPackingClick() {
-        const isScanning = sessionStorage.getItem('qr_scanning_active');
-        if (isScanning !== 'true') return;
+        if (sessionStorage.getItem('qr_scanning_active') !== 'true') return;
 
         if (isModalOpen()) {
             sessionStorage.removeItem('qr_scanning_active');
+            sessionStorage.removeItem('qr_scanned_value');
             window.clickRetryCount = 0;
             window.packingClickDispatched = false;
+            window.packingClickInFlight = false;
             return;
         }
 
-        // [v1.3.2 버그 수정] 포장 진행 버튼 클릭은 사이트 자체적으로 서버에 데이터를
-        // 요청(AJAX)한 뒤 응답이 와야 모달이 열리는 구조입니다. 응답이 200ms 안에 항상
-        // 오는 게 아닌데, 기존 코드는 응답을 기다리는 중인지 확인 없이 200ms마다 같은
-        // 버튼을 계속 또 클릭했습니다. 그 결과 서버에 같은 요청이 여러 번 겹쳐서 나가고,
-        // 응답이 도착할 때마다 모달 내용이 다시 그려지면서 화면이 깜빡이고 계속 바뀌는
-        // 것처럼 보이는 원인이 됐습니다. 이제 버튼은 딱 한 번만 클릭하고, 그 다음부터는
-        // 재클릭 없이 응답(모달 오픈)이 올 때까지 기다리기만 합니다.
-        if (window.packingClickDispatched) {
-            if (!window.clickRetryCount) window.clickRetryCount = 0;
-            if (window.clickRetryCount < 25) { // 최대 약 5초까지 응답 대기 (재클릭 없음)
-                window.clickRetryCount++;
+        const scannedValue = (sessionStorage.getItem('qr_scanned_value') || '').trim();
+        const normalize = (v) => String(v ?? '').replace(/\s+/g, '').trim();
+        const targetValue = normalize(scannedValue);
+        const rows = Array.from(document.querySelectorAll('#packingListTbody tr'));
+
+        const retry = () => {
+            window.clickRetryCount = (window.clickRetryCount || 0) + 1;
+            if (window.clickRetryCount <= 25) {
                 setTimeout(triggerPackingClick, 200);
             } else {
-                // 5초 넘게 응답이 없으면 포기 (서버 지연/오류 등)
-                console.log('[Speed-Scan] 서버 응답이 5초 이상 없어 자동 오픈을 포기합니다.');
+                console.log('[Speed-Scan] 포장 화면 자동 오픈을 5초 동안 확인하지 못했습니다.');
                 window.clickRetryCount = 0;
                 window.packingClickDispatched = false;
+                window.packingClickInFlight = false;
                 sessionStorage.removeItem('qr_scanning_active');
+                sessionStorage.removeItem('qr_scanned_value');
             }
-            return;
-        }
+        };
 
-        const rows = document.querySelectorAll('#packingListTbody tr');
         if (rows.length === 0) {
-            sessionStorage.removeItem('qr_scanning_active');
+            retry();
             return;
         }
 
-        // [버그 수정] 검색 결과가 정확히 1건일 때만 자동 클릭합니다.
-        // 여러 건이 검색되면 어떤 게 의도한 주문인지 알 수 없어 잘못된
-        // 포장화면(다른 출고건)이 열리는 원인이 되므로, 이 경우 사람이
-        // 직접 목록에서 골라 클릭하도록 자동 클릭을 하지 않습니다.
-        if (rows.length > 1) {
-            console.log('[Speed-Scan] 검색 결과가 ' + rows.length + '건이라 자동 클릭을 건너뜁니다. 직접 선택해 주세요.');
-            sessionStorage.removeItem('qr_scanning_active');
-            window.clickRetryCount = 0;
-            return;
-        }
+        const exactRows = targetValue ? rows.filter(row => {
+            const values = [
+                row.getAttribute('data-jancode'),
+                row.getAttribute('data-order-no'),
+                row.getAttribute('data-order-no2'),
+                row.getAttribute('data-id'),
+                row.getAttribute('data-code'),
+                row.innerText
+            ].map(normalize).filter(Boolean);
+            return values.some(v => v === targetValue);
+        }) : [];
 
-        const packingBtn = rows[0].querySelector('button.packing-btn');
-        if (!packingBtn) return;
+        let targetRow = null;
 
-        // 클릭은 여기서 딱 한 번만 보냅니다.
-        window.packingClickDispatched = true;
-        if (window.jQuery) {
-            window.jQuery(packingBtn).trigger('click');
+        if (exactRows.length === 1) {
+            targetRow = exactRows[0];
+        } else if (rows.length === 1) {
+            targetRow = rows[0];
         } else {
-            packingBtn.click();
+            // 검색 결과가 아직 완전히 안정되지 않았을 수 있으므로 재확인합니다.
+            retry();
+            return;
+        }
+
+        const packingBtn = targetRow.querySelector('button.packing-btn');
+        if (!packingBtn) {
+            retry();
+            return;
+        }
+
+        // 같은 AJAX 요청을 200ms마다 중복 발사하지 않습니다.
+        // 다만 첫 클릭이 실제로 처리되지 않은 경우 800ms 후 재시도할 수 있습니다.
+        if (window.packingClickInFlight) return;
+
+        window.packingClickInFlight = true;
+        window.packingClickDispatched = true;
+
+        try {
+            if (window.jQuery) {
+                window.jQuery(packingBtn).trigger('click');
+            } else {
+                packingBtn.click();
+            }
+        } catch (e) {
+            console.warn('[Speed-Scan] 포장 버튼 클릭 오류:', e);
         }
 
         window.clickRetryCount = 0;
-        setTimeout(triggerPackingClick, 200);
+
+        setTimeout(() => {
+            window.packingClickInFlight = false;
+            if (sessionStorage.getItem('qr_scanning_active') === 'true') {
+                triggerPackingClick();
+            }
+        }, 800);
     }
 
     /**
@@ -201,8 +236,10 @@
             input.dispatchEvent(new Event('change', { bubbles: true }));
 
             sessionStorage.setItem('qr_scanning_active', 'true');
+            sessionStorage.setItem('qr_scanned_value', cleanedString);
             window.clickRetryCount = 0;
             window.packingClickDispatched = false;
+            window.packingClickInFlight = false;
             form.submit();
             finalString = "";
         }
@@ -271,6 +308,9 @@
     let scanCount = 0;
     let isPackingComplete = false;
     let lastProcessedTime = 0;
+    let refreshTimer = null;
+    let refreshScheduled = false;
+    let observerMuteUntil = 0;
 
     // [추가 기능] 같은 트래킹번호끼리 항상 같은 색을 쓰도록 매핑 저장
     const trackingColorMap = new Map();
@@ -817,80 +857,116 @@
         const janInput = document.getElementById('search_jancode');
         if (janInput) { janInput.value = ''; }
 
-        setTimeout(refreshTableStyle, 50);
+        scheduleRefreshTableStyle(50);
     };
 
     /**
      * 3가지 상태별 행 바탕색 및 로케이션 병합 처리
      */
-    const refreshTableStyle = () => {
+    const refreshTableStyleNow = () => {
         if (isUpdating) return;
+
         const tbody = document.getElementById('packingItemsTbody');
         if (!tbody) return;
 
         isUpdating = true;
+        observerMuteUntil = performance.now() + 200;
 
-        // 동일 로케이션 & 동일 JAN & 동일 이미지 중복 항목 병합
-        mergeDuplicatePackingItems();
+        try {
+            mergeDuplicatePackingItems();
 
-        const rows = Array.from(tbody.querySelectorAll('tr'));
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            let checkedCount = 0;
 
-        let checkedCount = 0;
+            rows.forEach(row => {
+                const checkbox = row.querySelector('input.sub_checkbox');
+                const isLatest = row.classList.contains('latest-scanned-row');
+                const hasBadge = !!row.querySelector('.scan-counter-badge');
 
-        rows.forEach(row => {
-            const checkbox = row.querySelector('input.sub_checkbox');
-            const isLatest = row.classList.contains('latest-scanned-row');
-            const hasBadge = !!row.querySelector('.scan-counter-badge');
+                Array.from(row.cells).forEach(cell => {
+                    cell.style.display = '';
+                    cell.removeAttribute('rowspan');
+                });
 
-            Array.from(row.cells).forEach(cell => { cell.style.display = ''; cell.removeAttribute('rowspan'); });
+                if (isLatest) {
+                    row.style.setProperty('background-color', '#c8e6c9', 'important');
+                    row.style.opacity = '1';
+                } else if (hasBadge || (checkbox && checkbox.checked)) {
+                    row.style.setProperty('background-color', '#e3f2fd', 'important');
+                    row.style.opacity = '1';
+                } else {
+                    row.style.backgroundColor = '';
+                    row.style.opacity = '0.4';
+                }
 
-            if (isLatest) {
-                row.style.setProperty('background-color', '#c8e6c9', 'important');
-                row.style.opacity = '1';
-            } else if (hasBadge || (checkbox && checkbox.checked)) {
-                row.style.setProperty('background-color', '#e3f2fd', 'important');
-                row.style.opacity = '1';
-            } else {
-                row.style.backgroundColor = '';
-                row.style.opacity = '0.4';
+                if (checkbox && checkbox.checked) checkedCount++;
+
+                const trackingCell = row.querySelector('td[data-trackingno]');
+                const trackingVal = trackingCell
+                    ? (trackingCell.getAttribute('data-trackingno') || '').trim()
+                    : '';
+                const trackingColor = getTrackingColor(trackingVal);
+
+                if (trackingColor) {
+                    row.style.setProperty('border-left', `6px solid ${trackingColor}`, 'important');
+                } else {
+                    row.style.removeProperty('border-left');
+                }
+            });
+
+            updateRemainingCounter(rows.length, rows.length - checkedCount);
+
+            for (let i = 0; i < rows.length; i++) {
+                const currentCell = rows[i].cells[8];
+                if (!currentCell) continue;
+
+                const currentLoc = currentCell.innerText.split('\n')[0].split(':')[0].trim();
+                if (currentLoc === "" || currentLoc === "Location") continue;
+
+                let rowspan = 1;
+
+                for (let j = i + 1; j < rows.length; j++) {
+                    const nextCell = rows[j].cells[8];
+
+                    if (
+                        nextCell &&
+                        nextCell.innerText.split('\n')[0].split(':')[0].trim() === currentLoc
+                    ) {
+                        rowspan++;
+                        nextCell.style.display = 'none';
+                    } else {
+                        break;
+                    }
+                }
+
+                if (rowspan > 1) {
+                    currentCell.setAttribute('rowspan', rowspan);
+                    currentCell.style.verticalAlign = 'middle';
+                }
+
+                i += rowspan - 1;
             }
 
-            if (checkbox && checkbox.checked) checkedCount++;
-
-            // [추가 기능] 같은 트래킹번호끼리 같은 색 테두리로 상자 단위 구분 (LS/OS처럼
-            // 트래킹이 없는 건은 색을 넣지 않음)
-            const trackingCell = row.querySelector('td[data-trackingno]');
-            const trackingVal = trackingCell ? (trackingCell.getAttribute('data-trackingno') || '').trim() : '';
-            const trackingColor = getTrackingColor(trackingVal);
-            if (trackingColor) {
-                row.style.setProperty('border-left', `6px solid ${trackingColor}`, 'important');
-            } else {
-                row.style.removeProperty('border-left');
-            }
-        });
-
-        updateRemainingCounter(rows.length, rows.length - checkedCount);
-
-        // 로케이션 병합 (index 8)
-        for (let i = 0; i < rows.length; i++) {
-            const currentCell = rows[i].cells[8];
-            if (!currentCell) continue;
-            let currentLoc = currentCell.innerText.split('\n')[0].split(':')[0].trim();
-            if (currentLoc === "" || currentLoc === "Location") continue;
-            let rowspan = 1;
-            for (let j = i + 1; j < rows.length; j++) {
-                const nextCell = rows[j].cells[8];
-                if (nextCell && nextCell.innerText.split('\n')[0].split(':')[0].trim() === currentLoc) {
-                    rowspan++; nextCell.style.display = 'none';
-                } else break;
-            }
-            if (rowspan > 1) { currentCell.setAttribute('rowspan', rowspan); currentCell.style.verticalAlign = 'middle'; }
-            i += (rowspan - 1);
+            updateFocusStatus();
+        } finally {
+            isUpdating = false;
+            observerMuteUntil = performance.now() + 200;
         }
-
-        updateFocusStatus();
-        setTimeout(() => { isUpdating = false; }, 100);
     };
+
+    const scheduleRefreshTableStyle = (delay = 0) => {
+        if (refreshScheduled) return;
+
+        refreshScheduled = true;
+        clearTimeout(refreshTimer);
+
+        refreshTimer = setTimeout(() => {
+            refreshScheduled = false;
+            refreshTableStyleNow();
+        }, delay);
+    };
+
+    const refreshTableStyle = () => scheduleRefreshTableStyle(0);
 
     const init = () => {
         setupAutoPrint();
@@ -899,17 +975,41 @@
 
         processInboundJanCodes();
 
-        // 초기 합산 즉시 실행
-        setTimeout(refreshTableStyle, 300);
+        // 초기 합산
+        scheduleRefreshTableStyle(300);
 
-        const observer = new MutationObserver((mutations) => {
-            processInboundJanCodes();
+        // document.body 전체 감시 대신 포장 항목 테이블만 감시합니다.
+        // 스크립트가 자체적으로 만든 rowspan/style 변경은 observerMuteUntil 동안 무시합니다.
+        const setupPackingTableObserver = () => {
+            const target = document.getElementById('packingItemsTbody');
 
-            if (mutations.some(m => m.type === 'childList' || (m.type === 'attributes' && m.attributeName === 'checked'))) {
-                refreshTableStyle();
+            if (!target) {
+                setTimeout(setupPackingTableObserver, 300);
+                return;
             }
-        });
-        observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['checked'] });
+
+            const packingObserver = new MutationObserver((mutations) => {
+                if (performance.now() < observerMuteUntil || isUpdating) return;
+
+                const needsRefresh = mutations.some(m =>
+                    m.type === 'childList' ||
+                    (m.type === 'attributes' && m.attributeName === 'checked')
+                );
+
+                if (needsRefresh) {
+                    scheduleRefreshTableStyle(40);
+                }
+            });
+
+            packingObserver.observe(target, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['checked']
+            });
+        };
+
+        setupPackingTableObserver();
 
         const saveBtn = document.getElementById('btnSavePacking');
         if (saveBtn) saveBtn.addEventListener('click', () => { isPackingComplete = true; });
