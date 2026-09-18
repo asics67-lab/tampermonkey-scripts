@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         [관리] 포장출고 통합 도구 (회원사메모 + 에토와르매칭 + LH/OH중복알림 + 피킹리스트 + 오션배너)
+// @name         [포장] 포장출고 통합 도구 (회원사메모 + 에토와르매칭 + LH/OH중복알림 + 피킹리스트 + 오션배너)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.2.0
+// @version      1.2.1
 // @description  포장/출고(shipping/packing) 화면 통합본. 원본: 회원사 특이사항(메모) 공유 시스템 v4.7 + 에토와르 주소 매칭 v21.0 + LH/OH Tracking 중복 알림 v1.4.0 + AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정) + 포장 오션 강조 배너 v1.1
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
