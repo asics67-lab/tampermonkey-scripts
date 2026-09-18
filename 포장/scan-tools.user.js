@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.0
+// @version      1.3.1
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -59,6 +59,14 @@
  *    수정. 이제 검색 결과가 정확히 1건일 때만 자동 클릭하고, 여러 건이 검색되면(스캔값이
  *    여러 주문과 부분 일치하는 경우) 자동 클릭을 하지 않습니다 — 의도와 다른 출고건의
  *    포장화면이 열리던 원인이었습니다.
+ *
+ *  v1.3.1 버그 수정
+ *  - [블록 4] 콘솔 에러 "Cannot read properties of null (reading 'appendChild')" 수정.
+ *    파일 전체에 걸린 @run-at document-start 설정 때문에, document.body가 아직 생기기도
+ *    전에 [총 수량 합계] 팝업을 만드는 코드가 실행되어 나던 에러였습니다(원래 이 스크립트는
+ *    이 설정 없이 페이지가 다 그려진 뒤 실행되던 것이었는데, 합치면서 충돌함). 이 블록의
+ *    UI 생성 전체를 document.body가 준비된 뒤에만 실행하도록 수정. 이 에러 때문에 이
+ *    블록의 "포장완료 버튼 위 총 수량 합계" 기능 자체가 전혀 동작하지 않고 있었습니다.
  * ============================================================
  */
 
@@ -989,6 +997,12 @@
         #calc-summary-btn:hover { background: #218838; }
     `);
 
+    // [버그 수정] @run-at document-start 때문에 document.body가 아직 없는 시점에
+    // 이 코드가 실행되어 'Cannot read properties of null (reading appendChild)' 에러가
+    // 나던 문제. UI 생성/모달 감시 전체를 document.body가 준비된 뒤에만 실행하도록
+    // initSummaryTool() 함수로 감싸고, DOMContentLoaded 시점(또는 이미 준비됐으면 즉시)에
+    // 호출하도록 수정.
+    function initSummaryTool() {
     // 2. UI 생성
     const popup = document.createElement('div');
     popup.id = 'custom-summary-popup';
@@ -1149,4 +1163,11 @@
         }
         popup.style.display = 'block';
     });
+    }
+
+    if (document.body) {
+        initSummaryTool();
+    } else {
+        document.addEventListener('DOMContentLoaded', initSummaryTool);
+    }
 })();
