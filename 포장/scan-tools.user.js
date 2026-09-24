@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.4.1
+// @version      1.5.0
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -84,6 +84,14 @@
  *  - 스캔값을 sessionStorage에 보관하여 페이지 갱신 뒤에도 대상 행을 찾습니다.
  *  - 포장 테이블만 MutationObserver로 감시하여 불필요한 전체 페이지 갱신을 줄입니다.
  *  - refreshTableStyle()를 debounce하고 자체 DOM 변경에 의한 연쇄 refresh를 차단합니다.
+ *
+ *  v1.5.0 버그 수정 (포장 담당자 보고: "느려지고 게시판에 엔터로 줄바꿈이 안 된다")
+ *  - [블록 1] @match가 사이트 전체(www.platform.co.jp/*)로 되어 있다 보니, 빠른 스캔용
+ *    Enter/Tab 감지 로직이 포장 목록 화면이 아닌 다른 화면(게시판 글쓰기 등)에서도
+ *    Enter/Tab 키를 가로채 막아버리고 있었습니다 — 게시판에서 Enter로 줄바꿈이 안 되던
+ *    원인이자, 사이트 전체 페이지에서 매 키 입력마다 이 로직이 도는 바람에 전반적인
+ *    느려짐에도 영향을 줬을 가능성이 있습니다. 포장 목록 화면(검색 폼이 있는 화면)이
+ *    아니면 이 로직이 아무 것도 하지 않고 그대로 통과시키도록 조건을 추가했습니다.
  * ============================================================
  */
 
@@ -260,6 +268,17 @@
      * 4. 스캐너 입력 데이터 조립 (로그 기반 속도 조절)
      */
     window.addEventListener('keydown', function(e) {
+        // [v1.5.0 버그 수정] 이 스크립트가 사이트 전체(@match)에 걸려있다 보니, 포장
+        // 목록 화면이 아닌 다른 화면(게시판 글쓰기 등)에서도 Enter/Tab 키를 가로채
+        // 막아버리는 문제가 있었습니다 (게시판 글쓰기에서 Enter로 줄바꿈이 안 되던
+        // 원인이자, 사이트 전체에서 매 키 입력마다 이 로직이 도는 바람에 전체적인
+        // 느려짐에도 영향을 줬을 가능성이 있음). 이 빠른 스캔 기능은 포장 목록
+        // 화면(검색 폼이 있는 화면)에서만 의미가 있으므로, 그 화면이 아니면 아무
+        // 것도 하지 않고 그대로 통과시킵니다.
+        if (!document.getElementById('search-form') || !document.querySelector('input[name="keyword"]')) {
+            return;
+        }
+
         if (isModalOpen()) return;
 
         // Alt-Code 처리 (로그상의 Shift 조합 대응)
