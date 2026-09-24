@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.5.3
+// @version      1.5.6
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -115,6 +115,30 @@
  *    수량만 뭉뚱그려 표시되는 문제가 있었습니다. 상품명(브랜드/상품명 칸)을 병합
  *    기준에 추가해, 로케이션+JAN+상품명+이미지+트래킹번호가 모두 같은 경우에만
  *    합쳐지도록 수정했습니다.
+ *
+ *  v1.5.4 버그 수정 (포장 담당자 보고: "같은 트래킹인데 묶음으로 안 나올 때가 있다")
+ *  - [블록 2] 트래킹번호는 고객이 출고요청 시 직접 입력하는 값이라, 같은 배송건인데도
+ *    띄어쓰기·하이픈·대소문자가 미세하게 다르게 입력되면 문자열이 완전히 똑같지 않아
+ *    "다른 트래킹"으로 인식되어 합쳐지지 않던 문제가 있었습니다. 병합/색상 구분에
+ *    쓰이는 트래킹번호 비교 전에 공백·하이픈을 제거하고 대문자로 통일하도록 수정해,
+ *    이런 사소한 표기 차이는 무시하고 같은 트래킹으로 인식하도록 했습니다. (화면에
+ *    표시되는 트래킹번호 자체는 원본 그대로 유지됩니다)
+ *
+ *  v1.5.5 수정 (포장 담당자 보고: "미세하게 다르게 입력하면 로케이션이 달라서 여전히 안 합쳐진다")
+ *  - [블록 2] v1.5.4로도 해결이 안 된 진짜 원인: 트래킹을 다르게 입력하면 시스템이 이미
+ *    별개의 입고 건으로 처리해, 실제로 서로 다른 로케이션(창고 자리)에 보관되어 있었습니다.
+ *    그런데 병합 조건에 "로케이션까지 같아야 함"이 포함되어 있어서, 트래킹을 정규화해도
+ *    로케이션이 다르면 여전히 합쳐지지 않았습니다. 로케이션을 병합 "조건"에서 제외했습니다
+ *    — 이제 트래킹+JAN+상품명+이미지가 같으면 로케이션이 달라도 하나로 합쳐지고, 로케이션
+ *    칸에는 "장소 : 수량"을 로케이션별로 줄바꿈해서 함께 보여줍니다(수량은 모두 합산해서
+ *    한 숫자로 표시).
+ *
+ *  v1.5.6 추가 기능 (포장 담당자 요청: "같은 Tracking이 표에서 흩어져 있으면 작업이 힘들다")
+ *  - [블록 2] 여러 트래킹이 섞인 주문에서, 같은 트래킹에 속한 상품들이 표 안에서
+ *    떨어져 있으면 작업자가 한 트래킹(박스)을 포장하다가 다른 트래킹으로 넘어갔다가
+ *    다시 원래 트래킹으로 돌아와야 하는 불편함이 있다는 의견에 따라, 병합 후 남은
+ *    행들을 트래킹번호 기준으로 묶어서 항상 연속으로(붙어서) 나오도록 다시 정렬하는
+ *    기능을 추가했습니다. 트래킹 그룹이 나오는 순서 자체는 원래 순서를 그대로 따릅니다.
  * ============================================================
  */
 
@@ -354,6 +378,13 @@
     let refreshScheduled = false;
     let observerMuteUntil = 0;
 
+    // [v1.5.4 추가] 트래킹번호는 고객이 출고요청 시 직접 입력하는 값이라, 같은 배송건인데도
+    // 띄어쓰기/하이픈/대소문자가 미세하게 다르게 입력되어 서로 "다른 트래킹"으로 인식되는
+    // 경우가 있었습니다. 비교(병합/색상 구분) 전에 공백·하이픈을 제거하고 대문자로
+    // 통일해서, 이런 사소한 표기 차이는 무시하고 같은 트래킹으로 인식하도록 합니다.
+    // (화면에 표시되는 트래킹번호 자체는 원본 그대로 두고, 비교할 때만 정규화합니다)
+    const normalizeTrackingNo = (v) => String(v || '').replace(/[\s\-]/g, '').toUpperCase();
+
     // [추가 기능] 같은 트래킹번호끼리 항상 같은 색을 쓰도록 매핑 저장
     const trackingColorMap = new Map();
     const TRACKING_COLOR_PALETTE = ['#42a5f5', '#66bb6a', '#ffa726', '#ab47bc', '#26c6da', '#ec407a', '#8d6e63', '#5c6bc0'];
@@ -561,6 +592,8 @@
         const map = new Map();
         const rowsToRemove = [];
         let didMerge = false;
+        // [v1.5.6] 정렬 복원용: 각 행의 정규화된 트래킹번호를 기억해 둡니다.
+        const rowTrackingMap = new Map();
 
         // data-quantity 속성을 최우선으로 신뢰. 없으면 배지(.scan-counter-badge)는
         // 제외하고 숫자만 파싱해서 오염을 방지.
@@ -613,10 +646,15 @@
             // 사라지던 문제가 있었음. 트래킹번호도 병합 기준에 포함시켜, 트래킹번호까지
             // 완전히 같은 경우에만 합쳐지도록 수정.
             const trackingCell = row.querySelector('td[data-trackingno]');
-            const trackingVal = trackingCell ? (trackingCell.getAttribute('data-trackingno') || '').trim() : '';
+            const trackingVal = normalizeTrackingNo(trackingCell ? trackingCell.getAttribute('data-trackingno') : '');
+            rowTrackingMap.set(row, trackingVal);
 
-            // 비교용 키 생성 (순수 로케이션 + JAN 코드 + 상품명 + 이미지 + 트래킹번호)
-            const key = `${location}_${janCode}_${productName}_${imageKey}_${trackingVal}`;
+            // [v1.5.5 수정] 로케이션은 병합 "조건"에서 제외했습니다. 트래킹번호는 고객이
+            // 직접 입력하는 값이라, 같은 배송건인데도 입고 시점에 로케이션이 서로 다르게
+            // 배정되는 경우가 있었습니다(같은 트래킹인데 창고 안 다른 자리에 나눠 보관).
+            // 이제 트래킹+JAN+상품명+이미지가 같으면 로케이션이 달라도 하나로 합치고,
+            // 대신 로케이션 칸에는 "장소 : 수량"을 각각 줄바꿈으로 나눠서 함께 보여줍니다.
+            const key = `${janCode}_${productName}_${imageKey}_${trackingVal}`;
 
             if (map.has(key)) {
                 const targetRow = map.get(key);
@@ -641,9 +679,27 @@
                         $(targetQtyCell).data('quantity', totalQty);
                     }
 
-                    // Location 셀 수량 텍스트 업데이트
-                    if (targetRow.cells[8] && location) {
-                        targetRow.cells[8].innerText = `${location} : ${totalQty}개`;
+                    // [v1.5.5] 로케이션별 수량 breakdown을 다시 계산해서 여러 줄로 표시.
+                    // 기존에 이미 합쳐져 있던 로케이션들(여러 줄일 수 있음)을 읽어서
+                    // 맵으로 만들고, 이번에 합쳐지는 행의 로케이션+수량을 더합니다.
+                    if (targetRow.cells[8]) {
+                        const locQtyMap = new Map();
+                        const existingText = targetRow.cells[8].innerText || '';
+                        existingText.split('\n').forEach(line => {
+                            const m = line.match(/^(.*?)\s*:\s*(\d+)\s*개/);
+                            if (m) {
+                                const locName = m[1].trim();
+                                const qtyNum = parseInt(m[2], 10) || 0;
+                                if (locName) locQtyMap.set(locName, (locQtyMap.get(locName) || 0) + qtyNum);
+                            }
+                        });
+                        if (location) {
+                            locQtyMap.set(location, (locQtyMap.get(location) || 0) + q2);
+                        }
+                        const lines = Array.from(locQtyMap.entries()).map(([loc, qty]) => `${loc} : ${qty}개`);
+                        if (lines.length > 0) {
+                            targetRow.cells[8].innerText = lines.join('\n');
+                        }
                     }
 
                     didMerge = true;
@@ -662,6 +718,36 @@
         });
 
         rowsToRemove.forEach(row => row.remove());
+
+        // [v1.5.6 추가 기능] 같은 트래킹이 표에서 흩어져 있으면, 작업자가 한 트래킹을
+        // 포장하다가 다른 트래킹으로 넘어갔다가 다시 원래 트래킹으로 돌아와야 하는
+        // 불편함이 있다는 의견에 따라, 병합 후 남은 행들을 트래킹번호 기준으로 묶어
+        // 다시 정렬합니다(같은 트래킹끼리 항상 붙어서 연속으로 나오도록). 트래킹
+        // 그룹의 등장 순서 자체는 원래 순서를 그대로 따릅니다.
+        const survivorRows = Array.from(map.values());
+        const trackingFirstSeenOrder = [];
+        const seenTracking = new Set();
+        survivorRows.forEach(r => {
+            const t = rowTrackingMap.get(r) || '';
+            if (!seenTracking.has(t)) {
+                seenTracking.add(t);
+                trackingFirstSeenOrder.push(t);
+            }
+        });
+        const trackingOrderIndex = new Map();
+        trackingFirstSeenOrder.forEach((t, idx) => trackingOrderIndex.set(t, idx));
+
+        const sortedSurvivors = survivorRows.slice().sort((a, b) => {
+            const ta = trackingOrderIndex.get(rowTrackingMap.get(a) || '') ?? 0;
+            const tb = trackingOrderIndex.get(rowTrackingMap.get(b) || '') ?? 0;
+            return ta - tb; // 그룹 간 순서만 바꾸고, 같은 그룹 안에서는 원래 순서 유지(안정 정렬)
+        });
+
+        const isAlreadyGrouped = sortedSurvivors.every((r, idx) => survivorRows[idx] === r);
+        if (!isAlreadyGrouped) {
+            sortedSurvivors.forEach(r => tbody.appendChild(r));
+            didMerge = true; // 순서가 바뀌었으니 화면 갱신 트리거
+        }
 
         // 상단 "종류수/수량 합계" 표시를 최신 data-quantity 기준으로 다시 계산
         if (didMerge && typeof window.updateQuantityTotals === 'function') {
@@ -978,9 +1064,7 @@
                 if (checkbox && checkbox.checked) checkedCount++;
 
                 const trackingCell = row.querySelector('td[data-trackingno]');
-                const trackingVal = trackingCell
-                    ? (trackingCell.getAttribute('data-trackingno') || '').trim()
-                    : '';
+                const trackingVal = normalizeTrackingNo(trackingCell ? trackingCell.getAttribute('data-trackingno') : '');
                 const trackingColor = getTrackingColor(trackingVal);
 
                 if (trackingColor) {
