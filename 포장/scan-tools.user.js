@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.5.2
+// @version      1.5.3
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -107,6 +107,14 @@
  *    입력칸으로 자동으로 커서가 넘어가는 기능을 복원했습니다. Enter/Tab을 누르면 즉시
  *    이동하고, 별도로 Enter 없이 숫자만 입력해도 0.6초 정도 멈추면 자동으로 넘어갑니다.
  *    (이 타이밍은 실제 사용해 보시고 너무 빠르거나 느리면 조정 가능합니다)
+ *
+ *  v1.5.3 버그 수정 (포장 담당자 보고: "잔코드가 같으면 상품명이 달라도 합쳐진다")
+ *  - [블록 2] mergeDuplicatePackingItems()의 병합 기준(로케이션+JAN+이미지+트래킹번호)에
+ *    상품명이 빠져 있었습니다. 그래서 같은 로케이션/트래킹/JAN코드를 쓰는 서로 다른
+ *    상품(예: 한 상자 안에 든 여러 종류의 뽑기 상품 A/B/C/D)이 전부 하나로 합쳐져
+ *    수량만 뭉뚱그려 표시되는 문제가 있었습니다. 상품명(브랜드/상품명 칸)을 병합
+ *    기준에 추가해, 로케이션+JAN+상품명+이미지+트래킹번호가 모두 같은 경우에만
+ *    합쳐지도록 수정했습니다.
  * ============================================================
  */
 
@@ -586,6 +594,12 @@
                 ''
             ).replace(/\s+/g, '');
 
+            // [v1.5.3 버그 수정] 상품명(브랜드/상품명 칸)을 가져와 병합 기준에 포함.
+            // 원래 이 병합 기준에 상품명이 빠져 있어서, 같은 로케이션+트래킹+JAN코드를
+            // 쓰는 서로 다른 상품(예: 한 상자 안 뽑기 상품 A/B/C/D)이 전부 하나로
+            // 합쳐져 수량만 뭉뚱그려 나오던 문제가 있었습니다.
+            const productName = (row.cells[3]?.innerText || '').trim();
+
             // Location에서 콜론(:) 앞쪽의 순수 Location명만 추출 (예: "I2-4-2 : 32개" -> "I2-4-2")
             const rawLocationText = row.cells[8]?.innerText.split('\n')[0] || '';
             const location = rawLocationText.split(':')[0].trim();
@@ -601,8 +615,8 @@
             const trackingCell = row.querySelector('td[data-trackingno]');
             const trackingVal = trackingCell ? (trackingCell.getAttribute('data-trackingno') || '').trim() : '';
 
-            // 비교용 키 생성 (순수 로케이션 + JAN 코드 + 이미지 + 트래킹번호)
-            const key = `${location}_${janCode}_${imageKey}_${trackingVal}`;
+            // 비교용 키 생성 (순수 로케이션 + JAN 코드 + 상품명 + 이미지 + 트래킹번호)
+            const key = `${location}_${janCode}_${productName}_${imageKey}_${trackingVal}`;
 
             if (map.has(key)) {
                 const targetRow = map.get(key);
