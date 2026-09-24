@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장출고 통합 도구 (회원사메모 + 에토와르매칭 + LH/OH중복알림 + 오션배너)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.0
+// @version      1.4.1
 // @description  포장/출고(shipping/packing) 화면 통합본. 원본: 회원사 특이사항(메모) 공유 시스템 v4.7 + 에토와르 주소 매칭 v21.0 + LH/OH Tracking 중복 알림 v1.4.0 + 포장 오션 강조 배너 v1.1
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
@@ -40,6 +40,20 @@
  *    피킹리스트 관련 수정 이력은 그 파일로 함께 이동했습니다)
  *  - 위 이동으로 이 파일의 블록 번호가 하나씩 당겨졌습니다: 기존 [블록 5] 오션 강조 배너가
  *    이제 [블록 4]입니다.
+ *
+ *  v1.4.0 버그 수정 (포장 담당자 보고: "OCEAN 마크가 안 뜬다")
+ *  - [블록 4] 두 가지 취약점을 고쳤습니다.
+ *    1) OCEAN 여부 판단을 "행의 특정 열 번호(2번째 칸)"만 읽던 방식에서, 행 전체
+ *       텍스트에 "OCEAN"이 포함되는지 확인하는 방식으로 변경 — 사이트 표 구조가
+ *       바뀌어 열 순서가 달라져도 안전하게 동작합니다.
+ *    2) 배너를 띄우는 시점을 jQuery의 ajaxComplete 이벤트(사이트가 $.ajax로 통신할
+ *       때만 감지됨)에 의존하던 것에서, 모달이 실제로 화면에 보이는 상태로 바뀌는
+ *       순간을 직접 감시(MutationObserver)하는 방식으로 변경 — 사이트의 통신 방식이
+ *       무엇이든(fetch 등) 상관없이 항상 동작합니다.
+ *
+ *  v1.4.1 긴급 수정 (보고: "적용 후 화면이 비활성화되어 새로고침도 안 되고 아무것도 안 움직인다")
+ *  - [블록 4] v1.4.0의 모달 감시가 자기 자신이 만든 변경(배너 추가/삭제)에 다시 반응하는
+ *    무한 반복에 빠져 브라우저가 멈췄습니다. 모달의 열림/닫힘 상태 변화만 감시하도록 고쳤습니다.
  * ============================================================
  */
 
@@ -873,34 +887,82 @@
 
     $(document).on('click', '.packing-btn', function() {
         const row = $(this).closest('tr');
-        const shippingMethodText = row.find('td').eq(1).text();
-        isOceanRow = shippingMethodText.includes('OCEAN');
+        // [수정] 특정 열 번호(2번째 칸)만 읽던 방식은 사이트 표 구조가 바뀌면 엉뚱한
+        // 칸을 읽게 되어 취약했습니다. 행 전체 텍스트에서 "OCEAN" 포함 여부를
+        // 확인하도록 바꿔, 열 순서가 바뀌어도 안전하게 동작하도록 했습니다.
+        isOceanRow = row.text().toUpperCase().includes('OCEAN');
     });
 
-    $(document).on('ajaxComplete', function(event, xhr, settings) {
-        if (settings.url.includes('ajax_get_packing')) {
-            setTimeout(function() {
-                const modalBody = $('#packingModal .modal-body');
-                const modalHeader = $('#packingModal .modal-header');
+    // [수정] jQuery의 ajaxComplete 이벤트는 사이트가 jQuery의 $.ajax로 통신할 때만
+    // 감지됩니다. 사이트가 내부적으로 fetch 등 다른 방식으로 바뀌면 이 이벤트 자체가
+    // 전혀 발생하지 않아 배너가 안 뜰 수 있었습니다. 대신 모달이 실제로 화면에 보이는
+    // 상태(class="show")로 바뀌는 순간을 직접 감시하도록 바꿔, 통신 방식과 무관하게
+    // 항상 동작하도록 했습니다.
+    // [v1.4.1 긴급 수정] v1.4.0은 모달 "안쪽 전체(subtree+childList)"를 감시하면서,
+    // 감시 콜백 안에서 배너를 지웠다 다시 넣었습니다(= 모달 안쪽을 또 변경). 그러면
+    // 그 변경이 다시 감시에 걸려 콜백이 또 실행되는 무한 반복이 일어나, OCEAN 건의
+    // 포장 모달을 여는 순간 브라우저가 멈추고 새로고침도 안 되는 문제가 있었습니다.
+    // 이제 모달 "자신"의 class/style 속성만 감시하고, 모달이 닫힘→열림으로 바뀌는
+    // 순간에만 배너를 한 번 넣습니다(이미 있으면 다시 넣지 않음). 모달 내용이 조금
+    // 늦게 채워지는 경우를 대비해 열린 뒤 잠시 동안 몇 번 더 확인합니다.
+    const packingModalEl = document.getElementById('packingModal');
+    if (packingModalEl) {
+        const OCEAN_BANNER_HTML = `
+            <div class="ocean-banner">
+                <span class="ocean-text-blink">⚠️ [OCEAN 件] ⚠️</span><br>
+                この注文は <span style="text-decoration: underline;">OCEAN </span> 海上輸送の対象です.
+            </div>
+        `;
 
-                $('.ocean-banner').remove();
-                modalHeader.removeClass('ocean-modal-header');
+        const isModalVisible = () =>
+            packingModalEl.classList.contains('show') || packingModalEl.style.display === 'block';
 
-                if (isOceanRow) {
-                    const bannerHtml = `
-                        <div class="ocean-banner">
-                            <span class="ocean-text-blink">⚠️ [OCEAN 件] ⚠️</span><br>
-                            この注文は <span style="text-decoration: underline;">OCEAN </span> 海上輸送の対象です.
-                        </div>
-                    `;
-                    modalBody.prepend(bannerHtml);
+        const clearOceanBanner = () => {
+            $('#packingModal .ocean-banner').remove();
+            $('#packingModal .modal-header.ocean-modal-header').removeClass('ocean-modal-header');
+            $('#packingModalTitle .ocean-title-tag').remove();
+        };
 
-                    modalHeader.addClass('ocean-modal-header');
+        const ensureOceanBanner = () => {
+            if (!isModalVisible() || !isOceanRow) return;
+            const modalBody = $('#packingModal .modal-body');
+            const modalHeader = $('#packingModal .modal-header');
+            if (modalBody.length && modalBody.children('.ocean-banner').length === 0) {
+                modalBody.prepend(OCEAN_BANNER_HTML);
+            }
+            if (modalHeader.length && !modalHeader.hasClass('ocean-modal-header')) {
+                modalHeader.addClass('ocean-modal-header');
+            }
+            const title = $('#packingModalTitle');
+            if (title.length && !title.text().includes('[OCEAN 대상]')) {
+                title.append(' <b class="ocean-title-tag" style="color:red;">[OCEAN 대상]</b>');
+            }
+        };
 
-                    $('#packingModalTitle').append(' <b style="color:red;">[OCEAN 대상]</b>');
-                }
-            }, 150);
-        }
-    });
+        let wasVisible = isModalVisible();
+        let recheckTimers = [];
+
+        const modalObserver = new MutationObserver(() => {
+            const visible = isModalVisible();
+            if (visible === wasVisible) return; // 열림/닫힘 상태가 바뀔 때만 반응
+            wasVisible = visible;
+
+            recheckTimers.forEach(clearTimeout);
+            recheckTimers = [];
+
+            if (visible) {
+                [0, 150, 400, 800, 1500].forEach(ms => {
+                    recheckTimers.push(setTimeout(ensureOceanBanner, ms));
+                });
+            } else {
+                clearOceanBanner();
+            }
+        });
+        // 모달 자신의 class/style 속성만 감시 (안쪽 내용 변경은 감시하지 않음 → 무한 반복 방지)
+        modalObserver.observe(packingModalEl, {
+            attributes: true,
+            attributeFilter: ['class', 'style']
+        });
+    }
 
 })();

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.5.6
+// @version      1.5.7
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -139,6 +139,11 @@
  *    다시 원래 트래킹으로 돌아와야 하는 불편함이 있다는 의견에 따라, 병합 후 남은
  *    행들을 트래킹번호 기준으로 묶어서 항상 연속으로(붙어서) 나오도록 다시 정렬하는
  *    기능을 추가했습니다. 트래킹 그룹이 나오는 순서 자체는 원래 순서를 그대로 따릅니다.
+ *
+ *  v1.5.7 버그 수정 (보고: "종합관리에서 출고번호 입력 후 Enter 치면 키워드에도 들어가 조회가 안 된다")
+ *  - [블록 1] 고속 스캔이 "#search-form + keyword 입력칸"만 보고 포장 화면인지 판단해서,
+ *    같은 구조를 가진 종합관리 화면에서도 Enter를 스캔으로 착각했습니다. 이제 주소가
+ *    /admin/shipping/packing 일 때만 동작합니다.
  * ============================================================
  */
 
@@ -314,6 +319,13 @@
     /**
      * 4. 스캐너 입력 데이터 조립 (로그 기반 속도 조절)
      */
+    // [v1.5.7] 포장 목록 화면 판별: 주소 + 검색폼 + keyword 입력칸이 모두 맞아야 함
+    function isPackingListPage() {
+        return /\/admin\/shipping\/packing\/?$/.test(location.pathname) &&
+            !!document.getElementById('search-form') &&
+            !!document.querySelector('input[name="keyword"]');
+    }
+
     window.addEventListener('keydown', function(e) {
         // [v1.5.0 버그 수정] 이 스크립트가 사이트 전체(@match)에 걸려있다 보니, 포장
         // 목록 화면이 아닌 다른 화면(게시판 글쓰기 등)에서도 Enter/Tab 키를 가로채
@@ -322,7 +334,11 @@
         // 느려짐에도 영향을 줬을 가능성이 있음). 이 빠른 스캔 기능은 포장 목록
         // 화면(검색 폼이 있는 화면)에서만 의미가 있으므로, 그 화면이 아니면 아무
         // 것도 하지 않고 그대로 통과시킵니다.
-        if (!document.getElementById('search-form') || !document.querySelector('input[name="keyword"]')) {
+        // [v1.5.7 버그 수정] 종합관리 화면에도 #search-form과 keyword 입력칸이 똑같이
+        // 있어서, 출고번호를 입력하고 Enter를 치면 스캔으로 착각해 키워드칸에 값을
+        // 넣고 검색 대상을 JAN CODE로 바꿔 제출해 버리는 문제가 있었습니다.
+        // 주소가 포장 목록 화면(/admin/shipping/packing)일 때만 동작하도록 제한합니다.
+        if (!isPackingListPage()) {
             return;
         }
 
