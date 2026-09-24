@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.5.0
+// @version      1.5.2
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -92,6 +92,21 @@
  *    원인이자, 사이트 전체 페이지에서 매 키 입력마다 이 로직이 도는 바람에 전반적인
  *    느려짐에도 영향을 줬을 가능성이 있습니다. 포장 목록 화면(검색 폼이 있는 화면)이
  *    아니면 이 로직이 아무 것도 하지 않고 그대로 통과시키도록 조건을 추가했습니다.
+ *
+ *  v1.5.1 버그 수정 (포장 담당자 보고: "체크박스 클릭해도 JAN코드 입력칸으로 커서가 안 간다")
+ *  - [블록 2] v1.4.1에서 깜빡임을 줄이려고 감시 범위를 좁히면서, 체크박스의 "checked
+ *    속성(attribute)"만 감시하도록 바꿨는데, 사람이 마우스로 체크박스를 직접 클릭하면
+ *    속성이 아니라 상태값(property)만 바뀌어서 이 감시망에 걸리지 않았습니다. 그 결과
+ *    스캔으로 체크될 때는 JAN코드 입력칸으로 포커스가 잘 이동했지만, 손으로 직접
+ *    체크박스를 클릭할 때는 이 기능이 동작하지 않는 문제가 있었습니다. 브라우저가
+ *    체크박스 클릭 시 항상 발생시키는 'change' 이벤트를 별도로 감시하도록 보완해서,
+ *    스캔이든 수동 클릭이든 항상 감지되도록 수정했습니다.
+ *
+ *  v1.5.2 기능 복원 (포장 담당자 보고: "박스 수 입력 후 중량칸으로 자동 이동이 없어졌다")
+ *  - [블록 2] 박스 수 입력칸(id="box_cnt1" ~ "box_cnt5")에 숫자를 넣으면 중량(weight)
+ *    입력칸으로 자동으로 커서가 넘어가는 기능을 복원했습니다. Enter/Tab을 누르면 즉시
+ *    이동하고, 별도로 Enter 없이 숫자만 입력해도 0.6초 정도 멈추면 자동으로 넘어갑니다.
+ *    (이 타이밍은 실제 사용해 보시고 너무 빠르거나 느리면 조정 가능합니다)
  * ============================================================
  */
 
@@ -719,6 +734,9 @@
         window.addEventListener('keydown', function(e) {
             const active = document.activeElement;
             const isJanInput = active.id === 'search_jancode';
+            // [v1.5.1 추가 복원] 박스 수(box_cnt1~5) 입력칸에서 숫자 입력 후 Enter 시
+            // 중량(weight) 입력칸으로 바로 이동. (id="box_cnt1" ~ "box_cnt5")
+            const isBoxCountInput = /^box_cnt\d+$/.test(active.id || '');
 
             if (e.key === 'F2') {
                 const janInput = document.getElementById('search_jancode');
@@ -738,9 +756,34 @@
                 }
             }
 
+            if ((e.key === 'Enter' || e.key === 'Tab') && isBoxCountInput && active.value.trim() !== "") {
+                const weightInput = document.getElementById('weight');
+                if (weightInput) {
+                    e.preventDefault();
+                    weightInput.focus();
+                    weightInput.select();
+                }
+            }
+
             if (e.key === 'Enter' && active.id === 'weight' && active.value) {
                 const btn = document.getElementById('btnSavePacking');
                 if (btn && !btn.disabled) { isPackingComplete = true; btn.click(); }
+            }
+        }, true);
+
+        // [v1.5.1 추가 복원] Enter를 누르지 않고 숫자만 입력해도(예: 스캐너/키패드가
+        // Enter 없이 값만 채우는 경우) 값이 채워지면 바로 중량 칸으로 넘어가도록,
+        // input 이벤트도 함께 감시합니다.
+        document.addEventListener('input', function(e) {
+            const target = e.target;
+            if (target && /^box_cnt\d+$/.test(target.id || '') && target.value.trim() !== "") {
+                clearTimeout(window.boxCntMoveTimer);
+                window.boxCntMoveTimer = setTimeout(() => {
+                    if (document.activeElement === target) {
+                        const weightInput = document.getElementById('weight');
+                        if (weightInput) { weightInput.focus(); weightInput.select(); }
+                    }
+                }, 600);
             }
         }, true);
     };
@@ -1029,6 +1072,19 @@
         };
 
         setupPackingTableObserver();
+
+        // [버그 수정] 위 MutationObserver는 checked "속성(attribute)"만 감시하는데,
+        // 사람이 마우스로 체크박스를 직접 클릭하면 속성이 아니라 상태값(property)만
+        // 바뀌어서 이 감시망에 걸리지 않았습니다. 그 결과 "체크박스 클릭 → JAN코드
+        // 입력란으로 자동 포커스 이동" 기능이 수동 클릭 시에는 동작하지 않는 문제가
+        // 있었습니다. 브라우저가 체크박스 클릭 시 항상 발생시키는 'change' 이벤트를
+        // 별도로 감시해서, 스캔이든 수동 클릭이든 항상 감지되도록 보완합니다.
+        document.addEventListener('change', (e) => {
+            const target = e.target;
+            if (target && target.matches && target.matches('#packingItemsTbody input.sub_checkbox')) {
+                scheduleRefreshTableStyle(40);
+            }
+        }, true);
 
         const saveBtn = document.getElementById('btnSavePacking');
         if (saveBtn) saveBtn.addEventListener('click', () => { isPackingComplete = true; });
