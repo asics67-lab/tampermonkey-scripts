@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [관리] 종합관리 통합 도구 (오류메시지 히스토리 + 상세검색 UI개선 + 엔터키검색 + 회원선택 엔터)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.0.2
+// @version      1.0.3
 // @description  종합관리(mgt/index) 및 출고 오류(shipping/error) 화면 통합본. 원본: 오류 메시지 로컬 자동 백업 및 히스토리 추적 시스템 v10.5 + 상세검색 UI 개선 스크립트 v20.0 + 상세검색 엔터키 활성화 v1.0
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/mgt/index*
@@ -957,9 +957,33 @@
         return null;
     }
 
+    // [v1.0.3] Tampermonkey 격리 환경에서는 window가 진짜 window가 아니라서
+    // new MouseEvent(..., {view: window})가 오류로 멈추던 문제 수정.
+    // → 사이트의 jQuery로 Select2에 직접 선택 명령을 보내고, 안 되면 마우스 이벤트로 대체.
+    const pageWin = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+
+    function chooseBySelect2(el) {
+        const $ = pageWin.jQuery;
+        if (!$) return false;
+        const data = $(el).data('data');                       // Select2가 항목마다 저장해 둔 값
+        const containerId = el.closest('.select2-results__options')?.id || '';
+        const selectId = containerId.replace(/^select2-/, '').replace(/-results$/, '');
+        const sel = (data && data.element && data.element.closest('select')) ||
+                    (selectId && document.getElementById(selectId));
+        if (!data || data.id === undefined || !sel) return false;
+        $(sel).val(data.id).trigger('change');
+        try { $(sel).select2('close'); } catch (err) { /* 무시 */ }
+        return true;
+    }
+
     function choose(el) {
-        const opt = { bubbles: true, cancelable: true, view: window, button: 0 };
-        ['mouseenter', 'mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'].forEach(t => el.dispatchEvent(new MouseEvent(t, opt)));
+        try {
+            if (chooseBySelect2(el)) return;
+        } catch (err) { console.warn('[회원선택 엔터] select2 방식 실패, 마우스 방식으로 재시도', err); }
+        const opt = { bubbles: true, cancelable: true, button: 0 };
+        ['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'].forEach(t => {
+            try { el.dispatchEvent(new MouseEvent(t, opt)); } catch (err) { console.warn(err); }
+        });
     }
 
     function trySelect(input, retries) {
@@ -972,7 +996,7 @@
         const isEnter = e.key === 'Enter' || e.keyCode === 13 || (e.keyCode === 229 && e.code === 'Enter');
         if (!isEnter) return;
         const input = e.target;
-        if (!(input instanceof HTMLElement) || !input.matches(SEARCH_INPUT)) return;
+        if (!input || typeof input.matches !== 'function' || !input.matches(SEARCH_INPUT)) return;
         e.preventDefault();
         e.stopImmediatePropagation();
         setTimeout(() => trySelect(input, 10), (e.isComposing || e.keyCode === 229) ? 150 : 30);
