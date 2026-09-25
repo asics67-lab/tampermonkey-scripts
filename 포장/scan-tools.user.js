@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.5.8
+// @version      1.5.9
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -151,6 +151,15 @@
  *    이벤트가 발생하지 않아 커서 이동 로직이 반응하지 않았습니다. 전체 선택
  *    체크박스의 변경도 감시해서, 전부 체크되면 중량(weight) 칸으로, 전부 해제되면
  *    JAN코드 입력칸으로 커서가 이동하도록 했습니다.
+ *
+ *  v1.5.9 버그 수정 (보고: "포장화면에서 Tracking 번호를 눌러도 상태조회 화면이 안 열린다")
+ *  - [블록 2] v1.5.5에서 만든 "로케이션별 수량 표시"가 같은 트래킹 항목을 합칠 때
+ *    로케이션 칸 전체를 글자로 덮어써서, 칸 안에 있던 Tracking 번호 링크가 사라지고
+ *    "C4-2-19454862336670 : 1개"처럼 로케이션과 트래킹이 붙은 글자만 남았습니다.
+ *    (숨겨진 칸의 글자를 읽을 때 줄바꿈이 사라져 둘이 붙어 버림)
+ *    이제 로케이션 글자만 따로 읽고, 합친 로케이션 목록은 별도 줄에 표시하며,
+ *    Tracking 번호 링크는 그대로 남겨 두어 클릭하면 상태조회 화면이 열립니다.
+ *    합칠 때 원래 행의 로케이션이 목록에서 빠지던 문제도 함께 고쳤습니다.
  * ============================================================
  */
 
@@ -641,6 +650,46 @@
             return (img.getAttribute('data-large') || '').split('?')[0];
         };
 
+        // [v1.5.9] 로케이션 칸에서 "로케이션 글자"만 안전하게 읽기.
+        // 칸 안의 Tracking 링크/배지는 빼고 읽으며, 이미 합쳐 둔 목록(.tm-loc-lines)이
+        // 있으면 그 줄들을 그대로 읽습니다. (숨겨진 칸도 줄바꿈 없이 붙지 않도록 textContent 사용)
+        const LOC_KEEP_SELECTOR = 'a, button, .badge, [data-trackingno], .show_tracking_page';
+        const readLocCell = (cell) => {
+            if (!cell) return { lines: null, loc: '' };
+            const box = cell.querySelector('.tm-loc-lines');
+            if (box) {
+                return { lines: Array.from(box.children).map(d => d.textContent.trim()).filter(Boolean), loc: '' };
+            }
+            const clone = cell.cloneNode(true);
+            clone.querySelectorAll(LOC_KEEP_SELECTOR).forEach(el => el.remove());
+            const loc = (clone.textContent || '').trim().split(/\s+/)[0].split(':')[0].trim();
+            return { lines: null, loc };
+        };
+
+        // [v1.5.9] 합친 로케이션 목록을 칸 맨 위에 표시하고, Tracking 링크 등은 그대로 둡니다.
+        const writeLocCell = (cell, lines, originalLoc) => {
+            let box = cell.querySelector('.tm-loc-lines');
+            if (!box) {
+                // 원래 로케이션 글자(텍스트 노드/줄바꿈/로케이션만 담긴 요소)만 제거
+                Array.from(cell.childNodes).forEach(node => {
+                    if (node.nodeType === Node.TEXT_NODE) { node.remove(); return; }
+                    if (node.nodeType !== Node.ELEMENT_NODE) return;
+                    if (node.tagName === 'BR') { node.remove(); return; }
+                    if (node.matches(LOC_KEEP_SELECTOR) || node.querySelector(LOC_KEEP_SELECTOR)) return;
+                    if (originalLoc && node.textContent.trim().split(':')[0].trim() === originalLoc) node.remove();
+                });
+                box = document.createElement('div');
+                box.className = 'tm-loc-lines';
+                cell.prepend(box);
+            }
+            box.innerHTML = '';
+            lines.forEach(line => {
+                const d = document.createElement('div');
+                d.textContent = line;
+                box.appendChild(d);
+            });
+        };
+
         rows.forEach(row => {
             // JAN 코드 가져오기
             const janCode = (
@@ -657,8 +706,8 @@
             const productName = (row.cells[3]?.innerText || '').trim();
 
             // Location에서 콜론(:) 앞쪽의 순수 Location명만 추출 (예: "I2-4-2 : 32개" -> "I2-4-2")
-            const rawLocationText = row.cells[8]?.innerText.split('\n')[0] || '';
-            const location = rawLocationText.split(':')[0].trim();
+            // [v1.5.9] Tracking 링크 글자가 섞이지 않도록 readLocCell()로 읽습니다.
+            const location = readLocCell(row.cells[8]).loc;
 
             if (!janCode) return;
 
@@ -707,21 +756,27 @@
                     // 맵으로 만들고, 이번에 합쳐지는 행의 로케이션+수량을 더합니다.
                     if (targetRow.cells[8]) {
                         const locQtyMap = new Map();
-                        const existingText = targetRow.cells[8].innerText || '';
-                        existingText.split('\n').forEach(line => {
-                            const m = line.match(/^(.*?)\s*:\s*(\d+)\s*개/);
-                            if (m) {
-                                const locName = m[1].trim();
-                                const qtyNum = parseInt(m[2], 10) || 0;
-                                if (locName) locQtyMap.set(locName, (locQtyMap.get(locName) || 0) + qtyNum);
-                            }
-                        });
+                        const existing = readLocCell(targetRow.cells[8]);
+                        if (existing.lines) {
+                            existing.lines.forEach(line => {
+                                const m = line.match(/^(.*?)\s*:\s*(\d+)\s*개/);
+                                if (m) {
+                                    const locName = m[1].trim();
+                                    const qtyNum = parseInt(m[2], 10) || 0;
+                                    if (locName) locQtyMap.set(locName, (locQtyMap.get(locName) || 0) + qtyNum);
+                                }
+                            });
+                        } else if (existing.loc) {
+                            // [v1.5.9] 첫 병합: 원래 행 자신의 로케이션+수량도 목록에 포함
+                            locQtyMap.set(existing.loc, q1);
+                        }
                         if (location) {
                             locQtyMap.set(location, (locQtyMap.get(location) || 0) + q2);
                         }
                         const lines = Array.from(locQtyMap.entries()).map(([loc, qty]) => `${loc} : ${qty}개`);
                         if (lines.length > 0) {
-                            targetRow.cells[8].innerText = lines.join('\n');
+                            // [v1.5.9] 칸 전체를 덮어쓰지 않고 로케이션 목록만 갱신 (Tracking 링크 유지)
+                            writeLocCell(targetRow.cells[8], lines, existing.loc);
                         }
                     }
 
