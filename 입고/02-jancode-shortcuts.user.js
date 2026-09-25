@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] JAN코드 화면 단축키 통합 (JAN이동 + Enter이동 + F1/F2/F3 + 합계패널)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.1.0
+// @version      1.1.1
 // @description  jancode 페이지 통합본. 원본: A-1-9(JAN 검색이동) + A-1-6(Enter 행이동) + A-1-7(F3) + A-1-8(F1) + A-1-10(F2)
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/store/jancode*
@@ -226,15 +226,58 @@
             return { kinds, qtySum, amount };
         }
 
+        // [v1.1.1] 입고량이 많을 때 맨 아래로 안 내려가던 문제 수정.
+        // 기존에는 창(.modal)과 .modal-body 두 곳만 스크롤했는데, 실제로 스크롤되는
+        // 영역이 그 사이의 다른 칸이거나 페이지 자체인 경우 움직이지 않았습니다.
+        // → 표에서 바깥쪽으로 올라가며 "실제로 스크롤 가능한 영역"을 모두 찾아 함께 움직이고,
+        //   마지막으로 창의 맨 끝 요소를 화면에 보이도록(scrollIntoView) 한 번 더 맞춥니다.
+        //   또 창 내용이 화면보다 긴데 스크롤이 막혀 있으면 스크롤을 강제로 켭니다.
+        function isScrollable(el) {
+            if (!el || el.scrollHeight <= el.clientHeight + 5) return false;
+            if (el === document.scrollingElement || el === document.documentElement || el === document.body) return true;
+            const oy = getComputedStyle(el).overflowY;
+            return oy === 'auto' || oy === 'scroll' || oy === 'overlay';
+        }
         function scrollBoxes(modal) {
-            return [modal, modal.querySelector('.modal-body')].filter(el => el && el.scrollHeight > el.clientHeight + 5);
+            const boxes = [];
+            let el = modal.querySelector('table') || modal.querySelector('.modal-body') || modal;
+            while (el && el !== document) {
+                if (isScrollable(el) && !boxes.includes(el)) boxes.push(el);
+                el = el.parentElement;
+            }
+            const root = document.scrollingElement;
+            if (isScrollable(root) && !boxes.includes(root)) boxes.push(root);
+            return boxes;
         }
-        function goBottom(modal) { scrollBoxes(modal).forEach(el => el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })); }
-        function goTop(modal) { scrollBoxes(modal).forEach(el => el.scrollTo({ top: 0, behavior: 'smooth' })); }
-        function isAtBottom(modal) {
-            const boxes = scrollBoxes(modal);
-            return boxes.length > 0 && boxes.every(el => el.scrollTop + el.clientHeight >= el.scrollHeight - 30);
+        function ensureScrollable(modal) {
+            // 창 내용이 화면보다 긴데 창 자체 스크롤이 꺼져 있으면 켭니다.
+            const content = modal.querySelector('.modal-dialog') || modal.firstElementChild;
+            if (content && content.getBoundingClientRect().height > window.innerHeight &&
+                getComputedStyle(modal).overflowY !== 'auto' && getComputedStyle(modal).overflowY !== 'scroll') {
+                modal.style.setProperty('overflow-y', 'auto', 'important');
+            }
         }
+        function lastVisibleEl(modal) {
+            const content = modal.querySelector('.modal-content') || modal;
+            let el = content.lastElementChild;
+            while (el && el.getBoundingClientRect().height === 0) el = el.previousElementSibling;
+            return el || content;
+        }
+        function goBottom(modal) {
+            ensureScrollable(modal);
+            scrollBoxes(modal).forEach(el => { el.scrollTop = el.scrollHeight; });
+            const last = lastVisibleEl(modal);
+            if (last) last.scrollIntoView({ block: 'end' });
+            lastDir = 'bottom';
+        }
+        function goTop(modal) {
+            scrollBoxes(modal).forEach(el => { el.scrollTop = 0; });
+            const head = modal.querySelector('.modal-header, .modal-title') || modal.querySelector('.modal-content');
+            if (head) head.scrollIntoView({ block: 'start' });
+            lastDir = 'top';
+        }
+        let lastDir = 'top';
+        function isAtBottom() { return lastDir === 'bottom'; }
 
         const panel = document.createElement('div');
         panel.id = 'tm-jan-total-panel';
@@ -265,13 +308,14 @@
             const m = findModal();
             if (!m) return;
             e.preventDefault();
-            if (isAtBottom(m)) goTop(m); else goBottom(m);
+            if (isAtBottom()) goTop(m); else goBottom(m);
         }, true);
 
         setInterval(() => {
             const m = findModal();
             if (!m) { panel.style.display = 'none'; return; }
             panel.style.display = 'block';
+            ensureScrollable(m);
             const r = calc(m);
             panel.querySelector('#tm-jt-kinds').textContent = r.kinds;
             panel.querySelector('#tm-jt-qty').textContent = fmt(r.qtySum);
