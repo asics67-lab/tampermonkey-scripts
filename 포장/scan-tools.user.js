@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.5.7
+// @version      1.5.8
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -144,6 +144,13 @@
  *  - [블록 1] 고속 스캔이 "#search-form + keyword 입력칸"만 보고 포장 화면인지 판단해서,
  *    같은 구조를 가진 종합관리 화면에서도 Enter를 스캔으로 착각했습니다. 이제 주소가
  *    /admin/shipping/packing 일 때만 동작합니다.
+ *
+ *  v1.5.8 추가 기능 (요청: "전체 체크박스를 클릭하면 중량칸으로 커서가 가게 해 달라")
+ *  - [블록 2] 포장 모달 표 맨 위의 "전체 선택" 체크박스는 표 본문(tbody) 밖에 있고,
+ *    사이트가 이 체크박스로 아래 항목들을 한꺼번에 체크할 때는 개별 항목에 change
+ *    이벤트가 발생하지 않아 커서 이동 로직이 반응하지 않았습니다. 전체 선택
+ *    체크박스의 변경도 감시해서, 전부 체크되면 중량(weight) 칸으로, 전부 해제되면
+ *    JAN코드 입력칸으로 커서가 이동하도록 했습니다.
  * ============================================================
  */
 
@@ -1197,6 +1204,19 @@
             const target = e.target;
             if (target && target.matches && target.matches('#packingItemsTbody input.sub_checkbox')) {
                 scheduleRefreshTableStyle(40);
+            }
+        }, true);
+
+        // [v1.5.8] 표 맨 위 "전체 선택" 체크박스(표 본문 밖에 있음) 변경 감시.
+        // 사이트가 아래 항목들을 한꺼번에 체크한 뒤에 확인하도록 약간 늦게 갱신합니다.
+        // → 전부 체크되면 중량(weight) 칸으로, 전부 해제되면 JAN코드 입력칸으로 이동.
+        document.addEventListener('change', (e) => {
+            const target = e.target;
+            if (!target || target.type !== 'checkbox') return;
+            const tbody = document.getElementById('packingItemsTbody');
+            const table = tbody && tbody.closest('table');
+            if (table && table.contains(target) && !tbody.contains(target)) {
+                scheduleRefreshTableStyle(80);
             }
         }, true);
 
