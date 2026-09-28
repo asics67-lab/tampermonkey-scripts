@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] 트래킹넘버 모달 통합 (마스터패치본 + 회원명고정 + 하이픈표시 + JAN강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.2.0
+// @version      1.3.0
 // @description  입고 처리 모달(trackingno) 및 라벨 인쇄(locationlabel) 화면 통합본. 원본: A-1-13(베이스) + A-1-2(회원명 고정) + A-1-3(하이픈 표시) + A-1-12 중 입고 JAN강조 발췌
 // @author       물류팀
 // @match        https://platform.aispel.com/admin/store/trackingno*
@@ -47,6 +47,11 @@
  *    selectedLocList에 값이 있는 항목에 한해 자동으로 호출하도록 함.
  *    성공 시 그 값을, 실패 시 기존 record.location을 라벨/화면에 사용.
  *    이제 실제 DB 로케이션과 라벨 인쇄가 항상 일치함.
+ *
+ *  v1.3.0 수정 사항 (2026-09-28)
+ *  - 목록의 "Print"(라벨 재출력)를 눌러도 인쇄가 안 되던 문제 수정.
+ *    원인: 이 스크립트가 원본 라벨 페이지(/admin/print/locationlabel/)를 무조건 차단·종료함.
+ *    해결: 목록 Print 클릭을 가로채서 해당 행 정보로 55x45 커스텀 라벨을 만들어 인쇄.
  * ============================================================
  */
 
@@ -717,6 +722,70 @@
                 setTimeout(initJQueryBindings, 50);
             }
         };
+        /* [v1.3.0 추가] 목록의 "Print"(라벨 재출력) 버튼 처리
+         * 기존에는 이 스크립트가 /admin/print/locationlabel/ 페이지를 무조건 차단하고 바로 닫아서
+         * (입고 스캔 때 원본 라벨이 중복 출력되는 것을 막으려던 옛 로직) 목록에서 Print를 눌러도
+         * 아무것도 인쇄되지 않았음.
+         * → 목록의 Print 클릭을 가로채서, 그 행의 정보(회원번호·로케이션·운송장·입고일)로
+         *   스캔 때와 똑같은 55mm x 45mm 커스텀 라벨을 새 창에 만들어 인쇄함. */
+        function findHeaderIndex(table, keywords) {
+            const ths = Array.from(table.querySelectorAll('thead tr:first-child th'));
+            return ths.findIndex(th => {
+                const t = th.innerText.replace(/\s+/g, '').toUpperCase();
+                return keywords.some(k => t.includes(k));
+            });
+        }
+        function readRowForReprint(row) {
+            const table = row.closest('table');
+            const tLink = row.querySelector('.show_tracking_page');
+            const trackingNo = String((tLink ? tLink.innerText : '') || '').replace(/[^A-Za-z0-9]/g, '');
+            const cell = (keys) => {
+                const idx = findHeaderIndex(table, keys);
+                return idx >= 0 && row.cells[idx] ? row.cells[idx].innerText.trim() : '';
+            };
+            const member = cell(['회원사명', '회원', '会員']);
+            const location = cell(['LOCATION']);
+            const dateText = cell(['입고일자', '入庫日', 'STOCK']);
+            const stockDate = (dateText.match(/\d{4}-\d{2}-\d{2}/) || [getTodayDate()])[0];
+            const userNo = (member.split(/[-\s]/)[0] || '').trim();
+            return { trackingNo, location, userNo, stockDate };
+        }
+        document.addEventListener('click', function(e) {
+            const btn = e.target.closest && e.target.closest('a, button');
+            if (!btn || btn.innerText.trim().toUpperCase() !== 'PRINT') return;
+            const row = btn.closest('tr');
+            if (!row || !row.querySelector('.show_tracking_page')) return; // 목록 행의 Print만 처리
+            if (btn.closest('.modal')) return;
+
+            e.preventDefault();
+            e.stopImmediatePropagation();
+
+            const info = readRowForReprint(row);
+            if (!info.trackingNo || !info.location) {
+                alert('[라벨 재출력] 이 행에서 운송장번호/로케이션을 읽지 못했습니다. 화면을 새로고침 후 다시 시도해 주세요.');
+                return;
+            }
+            // 팝업 차단을 피하려고 클릭 순간에 창을 먼저 연다
+            const win = window.open('about:blank', '_blank', 'width=600,height=550');
+            if (!win) { alert('팝업이 차단되었습니다. 브라우저 주소창 오른쪽에서 팝업을 허용해 주세요.'); return; }
+            win.document.write("<html><body style='text-align:center;font-family:sans-serif;padding-top:20%;'><h3>라벨 재출력 준비 중...</h3></body></html>");
+
+            const waitDb = shippingSyncPromise
+                ? Promise.race([shippingSyncPromise.catch(() => {}), new Promise(r => setTimeout(r, 3000))])
+                : Promise.resolve();
+            waitDb.then(() => {
+                let lhNo = getMatchedLHNumber(info.trackingNo);
+                if (hasShouhinda(info.trackingNo, null)) lhNo = "商品代";
+                const html = generateCustomLabelHTML([{
+                    location: info.location, userNo: info.userNo || '-',
+                    stockDate: info.stockDate, trackingNo: info.trackingNo,
+                    boxIndex: '1/1', deliveryNoRaw: lhNo
+                }], info.trackingNo);
+                win.document.open(); win.document.write(html); win.document.close();
+                console.log('[라벨 재출력] 인쇄 창을 열었습니다:', info);
+            });
+        }, true);
+
         initJQueryBindings();
     })();
 
