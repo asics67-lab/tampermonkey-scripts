@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] JAN코드 화면 단축키 통합 (JAN이동 + Enter이동 + F1/F2/F3 + 합계패널)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.1.1
+// @version      1.2.0
 // @description  jancode 페이지 통합본. 원본: A-1-9(JAN 검색이동) + A-1-6(Enter 행이동) + A-1-7(F3) + A-1-8(F1) + A-1-10(F2)
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/store/jancode*
@@ -12,42 +12,64 @@
 // @run-at       document-end
 // ==/UserScript==
 
+/* [v1.2.0 변경 사항] 입고 창 스크롤이 안 내려가던 문제
+ * 1) 커서를 옮길 때 화면이 따라 튀지 않게 focus({ preventScroll: true }) 사용 (블록 1·3·4·5)
+ * 2) 블록 1: JAN 스캔 칸(#scan_jancode)에서만 동작. 행은 JAN코드 "완전 일치"로 찾고,
+ *    행을 맨 위로 올리는 건 사이트가 이미 하므로 스크립트에서는 다시 하지 않음.
+ *    또 한 번 스캔에 한 번만 실행되도록 중복 실행 방지.
+ * 3) 블록 6: 입고 창을 찾는 조건이 한국어 제목("JANCODE입고")만 인식해서
+ *    일본어 화면(JANコード入庫処理)에서는 합계 패널·F4가 아예 안 떴음 → 창 id(#storeModal)로 찾도록 수정.
+ * 4) 블록 7(신규): 사이트 업데이트로 "커서가 들어간 숫자 칸 위에서는 휠이 막히는" 코드가 생겨서,
+ *    수량 칸 위에서 휠을 굴리면 창이 안 내려갔음 → 그때는 스크립트가 대신 창을 스크롤.
+ *    (숫자 값이 휠로 바뀌는 건 사이트 코드가 계속 막아줌)
+ */
+
 (function() {
     'use strict';
 
-    /* [블록 1] A-1-9 — Enter: JAN CODE 입력 후 리스트 이동 + 수량 포커스 */
+    const focusNoScroll = (el) => {
+        try { el.focus({ preventScroll: true }); } catch (_) { el.focus(); }
+    };
+
+    function findStoreModal() {
+        const byId = document.getElementById('storeModal');
+        if (byId && (byId.classList.contains('show') || getComputedStyle(byId).display === 'block')) return byId;
+        return Array.from(document.querySelectorAll('.modal')).find(m => {
+            const visible = m.classList.contains('show') || getComputedStyle(m).display === 'block';
+            if (!visible) return false;
+            const title = (m.querySelector('.modal-title, h5, h4')?.textContent || '').replace(/\s+/g, '').toUpperCase();
+            return title.includes('JAN') && (title.includes('입고') || title.includes('入庫'));
+        }) || null;
+    }
+
+    /* [블록 1] A-1-9 — Enter: JAN 스캔 후 해당 행 수량 칸으로 커서 이동 */
     (function janSearchFocusBlock() {
+        let timer = null;
         window.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
-                const activeEl = document.activeElement;
-                const isJanInput = activeEl.closest('div')?.innerText.includes('JAN CODE') ||
-                                   activeEl.parentElement?.innerText.includes('JAN CODE');
+            if (e.key !== 'Enter') return;
+            const activeEl = document.activeElement;
+            if (!activeEl || activeEl.id !== 'scan_jancode') return;
 
-                if (isJanInput || activeEl.getAttribute('name')?.includes('jan')) {
-                    const searchVal = activeEl.value.trim();
-                    if (!searchVal) return;
+            const searchVal = activeEl.value.trim();
+            if (!searchVal) return;
 
-                    setTimeout(() => {
-                        const rows = Array.from(document.querySelectorAll('table tbody tr'));
-                        let targetRow = rows.find(row => row.innerText.includes(searchVal));
+            clearTimeout(timer); // 중복 실행 방지: 마지막 스캔 한 번만 처리
+            timer = setTimeout(() => {
+                const rows = Array.from(document.querySelectorAll('#scan-tbody tr'));
+                const targetRow = rows.find(row => String(row.getAttribute('data-jancode')) === searchVal);
+                if (!targetRow) return;
 
-                        if (targetRow) {
-                            targetRow.parentElement.prepend(targetRow);
-                            targetRow.style.backgroundColor = "#fff3cd";
-                            targetRow.style.outline = "2px solid #ff4d4d";
+                targetRow.style.backgroundColor = "#fff3cd";
+                targetRow.style.outline = "2px solid #ff4d4d";
 
-                            const qtyInput = targetRow.querySelector('input[type="number"]') ||
-                                             targetRow.querySelector('input:not([readonly])');
-
-                            if (qtyInput) {
-                                qtyInput.focus();
-                                qtyInput.select();
-                                console.log("[JAN 이동] 스캔 성공: 수량 칸으로 이동했습니다.");
-                            }
-                        }
-                    }, 400);
+                const qtyInput = targetRow.querySelector('input.quantity:not([readonly])') ||
+                                 targetRow.querySelector('input[type="number"]:not([readonly])');
+                if (qtyInput) {
+                    focusNoScroll(qtyInput);
+                    qtyInput.select();
+                    console.log("[JAN 이동] 스캔 성공: 수량 칸으로 이동했습니다.");
                 }
-            }
+            }, 400);
         }, true);
     })();
 
@@ -71,7 +93,7 @@
             const nextInput = inputs[index + 1];
 
             if (nextInput && nextInput.type !== 'radio') {
-                nextInput.focus();
+                focusNoScroll(nextInput);
                 nextInput.select();
                 return;
             }
@@ -94,19 +116,21 @@
                 console.log("[F3] JAN코드 칸 탐색 시작...");
 
                 const focusJAN = () => {
-                    const allInputs = Array.from(document.querySelectorAll('.el-input__inner, input:not([type="hidden"])'));
-                    let target = allInputs.find(el =>
-                        el.getAttribute('placeholder')?.includes('JAN') ||
-                        el.name?.includes('jan') ||
-                        el.id?.includes('jan')
-                    );
-                    if (!target && allInputs.length >= 4) target = allInputs[3];
+                    let target = document.getElementById('scan_jancode');
+                    if (!target || target.getBoundingClientRect().width === 0) {
+                        const allInputs = Array.from(document.querySelectorAll('.el-input__inner, input:not([type="hidden"])'));
+                        target = allInputs.find(el =>
+                            el.getAttribute('placeholder')?.includes('JAN') ||
+                            el.name?.includes('jan') ||
+                            el.id?.includes('jan')
+                        );
+                        if (!target && allInputs.length >= 4) target = allInputs[3];
+                    }
 
                     if (target) {
-                        target.focus();
+                        focusNoScroll(target);
                         if (typeof target.select === 'function') target.select();
                         target.dispatchEvent(new Event('input', { bubbles: true }));
-                        target.click();
                         console.log("[F3] 성공: JAN코드 칸에 포커스를 주었습니다.");
                     } else {
                         console.log("[F3] 실패: JAN코드 입력칸을 찾을 수 없습니다.");
@@ -114,7 +138,6 @@
                 };
 
                 focusJAN();
-                setTimeout(focusJAN, 100);
             }
         }, true);
     })();
@@ -133,7 +156,8 @@
 
                 console.log("[F1] 최적의 입력칸을 검색합니다...");
 
-                const executeFocus = () => {
+                let target = document.getElementById('scan_purchase_no');
+                if (!target || target.getBoundingClientRect().width === 0) {
                     let inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]), .el-input__inner'));
                     let visibleInputs = inputs.filter(el => {
                         const rect = el.getBoundingClientRect();
@@ -144,22 +168,16 @@
                         const rectB = b.getBoundingClientRect();
                         return rectA.top - rectB.top || rectA.left - rectB.left;
                     });
-                    const target = visibleInputs[0];
+                    target = visibleInputs[0];
+                }
 
-                    if (target) {
-                        target.focus();
-                        if (target.select) target.select();
-                        target.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
-                        target.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
-                        target.click();
-                        console.log("[F1] 성공: 첫 번째 칸에 포커스 완료");
-                    } else {
-                        console.log("[F1] 실패: 화면에서 입력칸을 찾을 수 없습니다.");
-                    }
-                };
-
-                executeFocus();
-                setTimeout(executeFocus, 100);
+                if (target) {
+                    focusNoScroll(target);
+                    if (target.select) target.select();
+                    console.log("[F1] 성공: 첫 번째 칸에 포커스 완료");
+                } else {
+                    console.log("[F1] 실패: 화면에서 입력칸을 찾을 수 없습니다.");
+                }
             }
         }, true);
     })();
@@ -171,6 +189,7 @@
                 console.log("[F2] pressed.");
 
                 const locationInput =
+                    document.getElementById('scan_location') ||
                     document.querySelector('input[name="location"]') ||
                     document.querySelector('input[placeholder*="Location"]') ||
                     document.querySelectorAll('.el-input__inner')[1] ||
@@ -179,10 +198,10 @@
                 if (locationInput) {
                     event.preventDefault();
                     setTimeout(() => {
-                        locationInput.focus();
+                        focusNoScroll(locationInput);
                         if (typeof locationInput.select === 'function') locationInput.select();
                     }, 50);
-                    console.log("[F2] Location field focused successfully.", locationInput);
+                    console.log("[F2] Location field focused successfully.");
                 } else {
                     console.warn("[F2] Location input element NOT found.");
                 }
@@ -190,34 +209,19 @@
         }, true);
     })();
 
-
-    /* [블록 6] v1.1.0 — JAN CODE 입고 처리 창: 실시간 합계 패널 + 맨 아래/맨 위 이동 (F4)
-     * 잔코드별로 하나씩 입고하면 창이 위쪽에 머물러 있어서, 맨 아래 총금액을 보려면
-     * 매번 스크롤을 끝까지 내려야 했습니다. 오른쪽 아래에 항상 떠 있는 합계 패널을 띄우고,
-     * 버튼(또는 F4)으로 창 맨 아래/맨 위로 바로 이동할 수 있게 했습니다.
-     * - 합계 = 각 행의 (수량 × 매입 가격) 을 더한 값 (수량이 0인 행은 제외)
-     */
+    /* [블록 6] JAN CODE 입고 처리 창: 실시간 합계 패널 + 맨 아래/맨 위 이동 (F4) */
     (function totalPanelBlock() {
         const num = (v) => parseFloat(String(v || '').replace(/[^0-9.\-]/g, '')) || 0;
         const fmt = (n) => Math.round(n).toLocaleString('ja-JP');
 
-        function findModal() {
-            return Array.from(document.querySelectorAll('.modal')).find(m => {
-                const visible = m.classList.contains('show') || getComputedStyle(m).display === 'block';
-                if (!visible) return false;
-                const title = (m.querySelector('.modal-title, h5, h4')?.textContent || '').replace(/\s+/g, '');
-                return title.includes('JANCODE입고');
-            }) || null;
-        }
-
         function calc(modal) {
             let kinds = 0, qtySum = 0, amount = 0;
-            modal.querySelectorAll('table tbody tr').forEach(tr => {
-                const inputs = Array.from(tr.querySelectorAll('input'))
-                    .filter(i => !['radio', 'checkbox', 'hidden'].includes((i.type || '').toLowerCase()));
-                if (inputs.length < 2) return;
-                const qty = num(inputs[0].value);   // 수량
-                const price = num(inputs[1].value); // 매입 가격
+            modal.querySelectorAll('#scan-tbody tr, table tbody tr').forEach(tr => {
+                const qtyEl = tr.querySelector('input.quantity');
+                const priceEl = tr.querySelector('input.purchase_price');
+                if (!qtyEl || !priceEl) return;
+                const qty = num(qtyEl.value);
+                const price = num(priceEl.value);
                 if (qty <= 0) return;
                 kinds++;
                 qtySum += qty;
@@ -226,12 +230,6 @@
             return { kinds, qtySum, amount };
         }
 
-        // [v1.1.1] 입고량이 많을 때 맨 아래로 안 내려가던 문제 수정.
-        // 기존에는 창(.modal)과 .modal-body 두 곳만 스크롤했는데, 실제로 스크롤되는
-        // 영역이 그 사이의 다른 칸이거나 페이지 자체인 경우 움직이지 않았습니다.
-        // → 표에서 바깥쪽으로 올라가며 "실제로 스크롤 가능한 영역"을 모두 찾아 함께 움직이고,
-        //   마지막으로 창의 맨 끝 요소를 화면에 보이도록(scrollIntoView) 한 번 더 맞춥니다.
-        //   또 창 내용이 화면보다 긴데 스크롤이 막혀 있으면 스크롤을 강제로 켭니다.
         function isScrollable(el) {
             if (!el || el.scrollHeight <= el.clientHeight + 5) return false;
             if (el === document.scrollingElement || el === document.documentElement || el === document.body) return true;
@@ -250,7 +248,6 @@
             return boxes;
         }
         function ensureScrollable(modal) {
-            // 창 내용이 화면보다 긴데 창 자체 스크롤이 꺼져 있으면 켭니다.
             const content = modal.querySelector('.modal-dialog') || modal.firstElementChild;
             if (content && content.getBoundingClientRect().height > window.innerHeight &&
                 getComputedStyle(modal).overflowY !== 'auto' && getComputedStyle(modal).overflowY !== 'scroll') {
@@ -279,6 +276,9 @@
         let lastDir = 'top';
         function isAtBottom() { return lastDir === 'bottom'; }
 
+        // 다른 블록에서도 쓰도록 공개
+        window.__tmJanScrollBoxes = scrollBoxes;
+
         const panel = document.createElement('div');
         panel.id = 'tm-jan-total-panel';
         panel.style.cssText = `
@@ -299,20 +299,19 @@
         `;
         document.body.appendChild(panel);
 
-        panel.querySelector('#tm-jt-bottom').addEventListener('click', () => { const m = findModal(); if (m) goBottom(m); });
-        panel.querySelector('#tm-jt-top').addEventListener('click', () => { const m = findModal(); if (m) goTop(m); });
+        panel.querySelector('#tm-jt-bottom').addEventListener('click', () => { const m = findStoreModal(); if (m) goBottom(m); });
+        panel.querySelector('#tm-jt-top').addEventListener('click', () => { const m = findStoreModal(); if (m) goTop(m); });
 
-        // F4: 맨 아래로 (이미 맨 아래면 맨 위로)
         window.addEventListener('keydown', function(e) {
             if (e.key !== 'F4' || e.altKey) return;
-            const m = findModal();
+            const m = findStoreModal();
             if (!m) return;
             e.preventDefault();
             if (isAtBottom()) goTop(m); else goBottom(m);
         }, true);
 
         setInterval(() => {
-            const m = findModal();
+            const m = findStoreModal();
             if (!m) { panel.style.display = 'none'; return; }
             panel.style.display = 'block';
             ensureScrollable(m);
@@ -321,6 +320,22 @@
             panel.querySelector('#tm-jt-qty').textContent = fmt(r.qtySum);
             panel.querySelector('#tm-jt-amount').textContent = fmt(r.amount);
         }, 400);
+    })();
+
+    /* [블록 7] v1.2.0 — 커서가 들어간 숫자 칸 위에서 휠을 굴려도 창이 스크롤되게 하기
+     * 사이트가 그 칸의 휠을 막아서(값이 바뀌는 것 방지) 창도 같이 안 움직였음.
+     * 값은 계속 안 바뀌고, 창만 스크립트가 대신 스크롤합니다. */
+    (function numberInputWheelBlock() {
+        window.addEventListener('wheel', function(e) {
+            const t = e.target;
+            if (!(t instanceof HTMLInputElement) || t.type !== 'number') return;
+            if (document.activeElement !== t) return; // 사이트가 막는 건 커서가 들어간 칸뿐
+            const modal = t.closest('.modal');
+            const boxes = modal && window.__tmJanScrollBoxes ? window.__tmJanScrollBoxes(modal) : [];
+            const box = boxes.includes(modal) ? modal : (boxes[0] || document.scrollingElement);
+            const dy = e.deltaMode === 1 ? e.deltaY * 40 : e.deltaY;
+            box.scrollTop += dy;
+        }, { capture: true, passive: true });
     })();
 
 })();
