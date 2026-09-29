@@ -163,7 +163,7 @@
  *
  *  v1.6.0 추가 기능 (요청: "같은 상품이라도 낱개/박스 단위를 구별하고 싶다")
  *  - [블록 2] 상품명에 "Set"(대소문자 무관, 단독 단어)이 들어간 항목은 박스 단위 상품으로
- *    보고, 상품명 앞에 주황색 "📦 박스" 배지와 주황 테두리를 표시합니다. 배지는 CSS로만
+ *    보고, 상품명 앞에 주황색 "📦 BOX" 배지와 주황 테두리를 표시합니다. 배지는 CSS로만
  *    그려서 상품명 글자에 섞이지 않으므로 합산(병합) 기준에는 영향이 없습니다.
  *    (Settings/Reset/sunset 같은 단어 속 set은 제외)
  * ============================================================
@@ -1156,13 +1156,13 @@
                 } else {
                     row.style.removeProperty('border-left');
                 }
-                // [v1.6.0] 상품명에 "Set"이 들어간 항목 = 박스 단위 상품 → 📦 박스 배지 표시
+                // [v1.6.0] 상품명에 "Set"이 들어간 항목 = 박스 단위 상품 → 📦 BOX 배지 표시
                 // (배지는 CSS로만 그려서 상품명 글자에 섞이지 않음 → 합산 기준에 영향 없음)
                 if (!window.__tmSetStyleAdded) {
                     window.__tmSetStyleAdded = true;
                     GM_addStyle(`
                         #packingItemsTbody tr.tm-set-row > td:nth-child(4)::before {
-                            content: '📦 박스'; display: inline-block; margin: 0 6px 2px 0;
+                            content: '📦 BOX'; display: inline-block; margin: 0 6px 2px 0;
                             padding: 2px 8px; border-radius: 4px; background: #ff9800; color: #fff;
                             font-weight: bold; font-size: 13px;
                         }
