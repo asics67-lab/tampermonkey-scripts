@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.6.0
+// @version      1.6.1
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -166,6 +166,14 @@
  *    보고, 상품명 앞에 주황색 "📦 BOX" 배지와 주황 테두리를 표시합니다. 배지는 CSS로만
  *    그려서 상품명 글자에 섞이지 않으므로 합산(병합) 기준에는 영향이 없습니다.
  *    (Settings/Reset/sunset 같은 단어 속 set은 제외)
+ *  - 예외: 상품명에 "Capsule toy"(또는 カプセルトイ)가 있으면 Set이 있어도 BOX 표시 안 함
+ *
+ *  v1.6.1 추가 기능 (요청: "JAN이 같고 상품명이 다른 목록이 있으면 한 목록만 스캔 수가 올라간다")
+ *  - [블록 2] 같은 JAN코드 목록이 여러 개면, 스캔 수량이 주문 수량에 도달하지 않은 목록부터
+ *    순서대로 스캔 수가 올라가고, 다 차면 다음 목록으로 넘어갑니다.
+ *  - [블록 2] 스캔 상태 표시: 진행 중 = 주황 배지 "スキャン 1/3 (남은 2)",
+ *    완료 = 초록 배지 "✅ 완료 3/3" + 행 연한 초록, 초과 = 빨간 "⚠ 과다스캔",
+ *    미스캔 = 기존처럼 흐리게 표시.
  * ============================================================
  */
 
@@ -975,6 +983,26 @@
     /**
      * [スキャン処理] 上部移動 + チェックボックス自動チェック + オスキャン時大型X表示及び警告音
      */
+    // [v1.6.1] 행의 주문 수량 / 현재 스캔 수 읽기 (같은 JAN 여러 목록 순차 스캔용)
+    const getRowQtyCell = (row) => row.cells[6] || row.cells[7];
+    const getRowOrderQty = (row) => {
+        const qtyCell = getRowQtyCell(row);
+        if (!qtyCell) return 0;
+        const attr = qtyCell.getAttribute('data-quantity');
+        if (attr !== null && attr !== '') {
+            const n = parseInt(attr, 10);
+            if (!isNaN(n)) return n;
+        }
+        const clone = qtyCell.cloneNode(true);
+        const b = clone.querySelector('.scan-counter-badge');
+        if (b) b.remove();
+        return parseInt(clone.innerText.replace(/[^0-9]/g, '') || '0', 10);
+    };
+    const getRowScanCount = (row) => {
+        const badge = row.querySelector('.scan-counter-badge');
+        return badge ? parseInt(badge.getAttribute('data-count') || '0', 10) : 0;
+    };
+
     const showLastScannedInfo = (jancode) => {
         const tbody = document.getElementById('packingItemsTbody');
         if (!tbody) return;
@@ -982,12 +1010,19 @@
         const rows = Array.from(tbody.querySelectorAll('tr'));
         let targetRow = null;
 
-        for (let row of rows) {
+        // [v1.6.1] 같은 JAN코드가 여러 목록(상품명만 다른 경우 등)에 있으면,
+        // 아직 스캔 수량이 다 차지 않은 목록부터 순서대로 올라가게 합니다.
+        // 한 목록의 스캔 수량 = 주문 수량이 되면 다음 목록으로 넘어갑니다.
+        // 모든 목록이 다 찼으면 마지막 목록에 과다스캔 경고가 표시됩니다.
+        const matchedRows = rows.filter(row => {
             const rowJan = row.getAttribute('data-jancode') || row.cells[5]?.innerText.trim();
-            if (rowJan && String(rowJan) === String(jancode)) {
-                targetRow = row;
-                break;
-            }
+            return rowJan && String(rowJan) === String(jancode);
+        });
+        if (matchedRows.length > 0) {
+            targetRow = matchedRows.find(row => {
+                const q = getRowOrderQty(row);
+                return q <= 0 || getRowScanCount(row) < q;
+            }) || matchedRows[matchedRows.length - 1];
         }
 
         // 1. 一致するJANコードがない場合：警告音＋画面中央大型X表示＋入力欄赤強調
@@ -1071,6 +1106,7 @@
             let currentCount = parseInt(badge.getAttribute('data-count') || '0', 10) + 1;
             badge.setAttribute('data-count', currentCount);
             badge.innerText = `スキャン: ${currentCount}`;
+            badge.classList.remove('tm-scan-done');
 
             // [추가 기능] 과스캔 방지 - 스캔 횟수가 원래 주문 수량을 넘으면 경고
             const orderQty = (() => {
@@ -1095,8 +1131,22 @@
                 badge.style.removeProperty('background-color');
                 badge.style.removeProperty('color');
                 badge.style.removeProperty('border-color');
-                badge.style.setProperty('background-color', '#ffebee', 'important');
-                badge.style.setProperty('color', '#d32f2f', 'important');
+                if (orderQty > 0 && currentCount === orderQty) {
+                    // [v1.6.1] 스캔 완료: 초록 배지
+                    badge.classList.add('tm-scan-done');
+                    badge.style.setProperty('background-color', '#2e7d32', 'important');
+                    badge.style.setProperty('color', '#ffffff', 'important');
+                    badge.style.setProperty('border-color', '#2e7d32', 'important');
+                    badge.innerText = `✅ 완료 ${currentCount}/${orderQty}`;
+                } else {
+                    // [v1.6.1] 스캔 진행 중: 주황 배지 (남은 수량 표시)
+                    badge.style.setProperty('background-color', '#fff3e0', 'important');
+                    badge.style.setProperty('color', '#e65100', 'important');
+                    badge.style.setProperty('border-color', '#fb8c00', 'important');
+                    badge.innerText = orderQty > 0
+                        ? `スキャン ${currentCount}/${orderQty} (남은 ${orderQty - currentCount})`
+                        : `スキャン: ${currentCount}`;
+                }
             }
         }
 
@@ -1137,6 +1187,10 @@
                 if (isLatest) {
                     row.style.setProperty('background-color', '#c8e6c9', 'important');
                     row.style.opacity = '1';
+                } else if (hasBadge && row.querySelector('.scan-counter-badge.tm-scan-done')) {
+                    // [v1.6.1] 스캔 수량을 다 채운 목록: 연한 초록
+                    row.style.setProperty('background-color', '#e8f5e9', 'important');
+                    row.style.opacity = '1';
                 } else if (hasBadge || (checkbox && checkbox.checked)) {
                     row.style.setProperty('background-color', '#e3f2fd', 'important');
                     row.style.opacity = '1';
@@ -1172,7 +1226,9 @@
                     `);
                 }
                 const setName = (row.cells[3]?.innerText || '');
-                row.classList.toggle('tm-set-row', /(^|[^a-z])set(?![a-z])/i.test(setName));
+                // 예외: Capsule toy(カプセルトイ) 상품은 Set이 있어도 BOX 표시 안 함
+                const isCapsuleToy = /capsule\s*toy|カプセルトイ/i.test(setName);
+                row.classList.toggle('tm-set-row', !isCapsuleToy && /(^|[^a-z])set(?![a-z])/i.test(setName));
             });
 
             updateRemainingCounter(rows.length, rows.length - checkedCount);
