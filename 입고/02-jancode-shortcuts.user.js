@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] JAN코드 화면 단축키 통합 (JAN이동 + Enter이동 + F1/F2/F3 + 합계패널)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.2.0
+// @version      1.2.1
 // @description  jancode 페이지 통합본. 원본: A-1-9(JAN 검색이동) + A-1-6(Enter 행이동) + A-1-7(F3) + A-1-8(F1) + A-1-10(F2)
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/store/jancode*
@@ -22,6 +22,13 @@
  * 4) 블록 7(신규): 사이트 업데이트로 "커서가 들어간 숫자 칸 위에서는 휠이 막히는" 코드가 생겨서,
  *    수량 칸 위에서 휠을 굴리면 창이 안 내려갔음 → 그때는 스크립트가 대신 창을 스크롤.
  *    (숫자 값이 휠로 바뀌는 건 사이트 코드가 계속 막아줌)
+ *
+ * [v1.2.1 변경 사항] 입고 창 스크롤이 다시 안 내려간다는 보고
+ * - 블록 7을 넓혔습니다. 전에는 "커서가 들어간 숫자 칸 위"에서만 대신 스크롤했는데,
+ *   이제는 입고 창 안 어디에서 휠을 굴리든 사이트가 휠을 막아 버린 경우
+ *   (창이 안 움직이는 경우)에는 스크립트가 대신 창을 스크롤합니다.
+ *   사이트가 막지 않은 경우는 원래대로 브라우저가 스크롤하므로 두 번 움직이지 않습니다.
+ * - 입고 창이 화면보다 길면 창에 스크롤바를 강제로 켜는 처리를 휠을 굴릴 때도 바로 적용.
  */
 
 (function() {
@@ -322,19 +329,32 @@
         }, 400);
     })();
 
-    /* [블록 7] v1.2.0 — 커서가 들어간 숫자 칸 위에서 휠을 굴려도 창이 스크롤되게 하기
-     * 사이트가 그 칸의 휠을 막아서(값이 바뀌는 것 방지) 창도 같이 안 움직였음.
-     * 값은 계속 안 바뀌고, 창만 스크립트가 대신 스크롤합니다. */
-    (function numberInputWheelBlock() {
+    /* [블록 7] v1.2.1 — 입고 창 안에서 휠이 막히면 스크립트가 대신 스크롤
+     * 사이트 코드가 휠 동작을 막으면(preventDefault) 창이 안 내려감.
+     * 휠 이벤트 처리가 모두 끝난 뒤에 "막혔는지"를 확인해서, 막혔을 때만 대신 스크롤합니다.
+     * (숫자 칸의 값이 휠로 바뀌는 건 사이트가 계속 막아 줌) */
+    (function modalWheelFallbackBlock() {
+        const pickBox = (modal) => {
+            const content = modal.querySelector('.modal-dialog') || modal.firstElementChild;
+            if (content && content.getBoundingClientRect().height > window.innerHeight &&
+                getComputedStyle(modal).overflowY !== 'auto' && getComputedStyle(modal).overflowY !== 'scroll') {
+                modal.style.setProperty('overflow-y', 'auto', 'important');
+            }
+            const boxes = window.__tmJanScrollBoxes ? window.__tmJanScrollBoxes(modal) : [];
+            return boxes.includes(modal) ? modal : (boxes[0] || document.scrollingElement);
+        };
         window.addEventListener('wheel', function(e) {
             const t = e.target;
-            if (!(t instanceof HTMLInputElement) || t.type !== 'number') return;
-            if (document.activeElement !== t) return; // 사이트가 막는 건 커서가 들어간 칸뿐
+            if (!(t instanceof Element)) return;
             const modal = t.closest('.modal');
-            const boxes = modal && window.__tmJanScrollBoxes ? window.__tmJanScrollBoxes(modal) : [];
-            const box = boxes.includes(modal) ? modal : (boxes[0] || document.scrollingElement);
-            const dy = e.deltaMode === 1 ? e.deltaY * 40 : e.deltaY;
-            box.scrollTop += dy;
+            if (!modal || modal !== findStoreModal()) return;
+            const dy = e.deltaMode === 1 ? e.deltaY * 40 : (e.deltaMode === 2 ? e.deltaY * window.innerHeight : e.deltaY);
+            // 이벤트 처리가 전부 끝난 뒤에 확인 (사이트 코드가 막았는지)
+            setTimeout(() => {
+                if (!e.defaultPrevented) return; // 막히지 않았으면 브라우저가 정상 스크롤함
+                const box = pickBox(modal);
+                if (box) box.scrollTop += dy;
+            }, 0);
         }, { capture: true, passive: true });
     })();
 
