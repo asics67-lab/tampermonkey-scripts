@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         [관리] 전사공통 도구 (업무채팅알람봇 + 피킹현황카운터)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.2.0
+// @version      1.2.1
 // @description  admin 전체 화면에서 공통으로 쓰는 도구 모음. 원본: 사내 만능 테스크 채팅 알람봇 v1.3 + 출고관리 피킹중/대기중 전체 합계 알림 v1.96
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin*
+// @exclude      https://www.platform.co.jp/admin/print/*
+// @exclude      https://platform.co.jp/admin/print/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
 // @grant        GM_getValue
@@ -32,6 +34,11 @@
  *  - [블록 1] 업무채팅 알람봇의 MY_NAME 값은 이제 최초 실행 시 1회 입력창으로 받고,
  *    그 브라우저의 Tampermonkey 저장소에만 저장됩니다. GitHub에는 개인 이름이 올라가지 않습니다.
  *    재설정: Tampermonkey 메뉴 → "👤 업무채팅 - 내 이름 재설정"
+ *
+ *  v1.2.1 버그 수정 (보고: "포장 라벨 인쇄 화면에 검은 네모가 같이 찍힌다")
+ *  - @match가 admin 전체라서 송장/라벨 인쇄 화면(/admin/print/...)에도 [블록 2] 피킹 현황
+ *    창(검은 박스)과 [블록 1] 채팅 버튼이 떠서 라벨 위에 같이 인쇄됐습니다.
+ *    인쇄 화면(/admin/print/*)에서는 이 스크립트가 아예 실행되지 않도록 @exclude 추가.
  * ============================================================
  */
 
