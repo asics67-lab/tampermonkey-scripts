@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.5.9
+// @version      1.6.0
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -160,6 +160,12 @@
  *    이제 로케이션 글자만 따로 읽고, 합친 로케이션 목록은 별도 줄에 표시하며,
  *    Tracking 번호 링크는 그대로 남겨 두어 클릭하면 상태조회 화면이 열립니다.
  *    합칠 때 원래 행의 로케이션이 목록에서 빠지던 문제도 함께 고쳤습니다.
+ *
+ *  v1.6.0 추가 기능 (요청: "같은 상품이라도 낱개/박스 단위를 구별하고 싶다")
+ *  - [블록 2] 상품명에 "Set"(대소문자 무관, 단독 단어)이 들어간 항목은 박스 단위 상품으로
+ *    보고, 상품명 앞에 주황색 "📦 박스" 배지와 주황 테두리를 표시합니다. 배지는 CSS로만
+ *    그려서 상품명 글자에 섞이지 않으므로 합산(병합) 기준에는 영향이 없습니다.
+ *    (Settings/Reset/sunset 같은 단어 속 set은 제외)
  * ============================================================
  */
 
@@ -1150,6 +1156,23 @@
                 } else {
                     row.style.removeProperty('border-left');
                 }
+                // [v1.6.0] 상품명에 "Set"이 들어간 항목 = 박스 단위 상품 → 📦 박스 배지 표시
+                // (배지는 CSS로만 그려서 상품명 글자에 섞이지 않음 → 합산 기준에 영향 없음)
+                if (!window.__tmSetStyleAdded) {
+                    window.__tmSetStyleAdded = true;
+                    GM_addStyle(`
+                        #packingItemsTbody tr.tm-set-row > td:nth-child(4)::before {
+                            content: '📦 박스'; display: inline-block; margin: 0 6px 2px 0;
+                            padding: 2px 8px; border-radius: 4px; background: #ff9800; color: #fff;
+                            font-weight: bold; font-size: 13px;
+                        }
+                        #packingItemsTbody tr.tm-set-row > td:nth-child(4) {
+                            box-shadow: inset 0 0 0 3px #ff9800;
+                        }
+                    `);
+                }
+                const setName = (row.cells[3]?.innerText || '');
+                row.classList.toggle('tm-set-row', /(^|[^a-z])set(?![a-z])/i.test(setName));
             });
 
             updateRemainingCounter(rows.length, rows.length - checkedCount);
