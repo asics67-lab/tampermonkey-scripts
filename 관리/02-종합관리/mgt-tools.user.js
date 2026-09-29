@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [관리] 종합관리 통합 도구 (오류메시지 히스토리 + 상세검색 UI개선 + 엔터키검색 + 회원선택 엔터)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.0.3
+// @version      1.1.0
 // @description  종합관리(mgt/index) 및 출고 오류(shipping/error) 화면 통합본. 원본: 오류 메시지 로컬 자동 백업 및 히스토리 추적 시스템 v10.5 + 상세검색 UI 개선 스크립트 v20.0 + 상세검색 엔터키 활성화 v1.0
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/mgt/index*
@@ -22,6 +22,9 @@
  *    2) 종합관리 상세검색 UI 개선 스크립트 v20.0 (mgt/index)
  *    3) 종합관리 - 상세검색 엔터키 활성화 v1.0 (mgt/index)
  *    4) 회원 선택 드롭다운 - 엔터로 업체 선택 (mgt/index) [v1.0.2 추가]
+ *    5) 오류및출고보류 화면 → 종합관리 바로 조회 버튼 (shipping/error + mgt/index) [v1.1.0 추가]
+ *       오류입고 화면의 출고번호 링크는 오류 내용만 보여줘서, 고객 응대 중 출고 정보를 보기 어려웠음.
+ *       출고번호 옆 [🔍 종합] 버튼 → 새 탭에서 종합관리가 그 출고번호로 바로 조회됩니다.
  *  - 2번과 3번은 같은 검색폼(#search-form)을 다루지만, 2번은 폼을 재배치(요소를 이동)만 할 뿐
  *    input 요소 자체를 새로 만들지 않으므로 3번이 걸어둔 엔터키 이벤트가 유지됩니다.
  *  - 다만 두 스크립트가 같은 폼을 동시에 건드리는 만큼, 실제 배포 전 검색창에서 엔터키가
@@ -1001,4 +1004,98 @@
         e.stopImmediatePropagation();
         setTimeout(() => trySelect(input, 10), (e.isComposing || e.keyCode === 229) ? 150 : 30);
     }, true);
+})();
+
+/* ------------------------------------------------------------
+ * [블록 5] 오류및출고보류 → 종합관리 바로 조회 (v1.1.0 추가)
+ *  - shipping/error: 각 행의 출고번호 옆에 [🔍 종합] 버튼을 붙임
+ *  - 버튼을 누르면 새 탭으로 종합관리를 열고, 출고번호 칸에 번호를 넣어 자동 검색
+ * ------------------------------------------------------------ */
+(function() {
+    'use strict';
+
+    const HASH_KEY = 'tm_delivery=';
+    const DELIVERY_RE = /\b([A-Z]{2}\d{6,})\b/;
+
+    // ===== 1) 오류및출고보류 화면: 버튼 붙이기 =====
+    if (location.pathname.startsWith('/admin/shipping/error')) {
+        const style = document.createElement('style');
+        style.textContent = `
+            .tm-mgt-jump { display:inline-block; margin-left:4px; padding:1px 6px; font-size:11px; line-height:1.4;
+                border:1px solid #1e88e5; border-radius:4px; background:#e3f2fd; color:#1565c0; cursor:pointer;
+                white-space:nowrap; vertical-align:middle; }
+            .tm-mgt-jump:hover { background:#1e88e5; color:#fff; }
+        `;
+        (document.head || document.documentElement).appendChild(style);
+
+        const findDeliveryCol = (table) => {
+            const ths = Array.from(table.querySelectorAll('thead th'));
+            const idx = ths.findIndex(th => th.textContent.replace(/\s+/g, '').includes('출고번호'));
+            return idx >= 0 ? idx : 3;
+        };
+
+        const addButtons = () => {
+            const tbody = document.getElementById('packingListTbody');
+            if (!tbody) return;
+            const table = tbody.closest('table');
+            const col = table ? findDeliveryCol(table) : 3;
+            tbody.querySelectorAll('tr').forEach(tr => {
+                const cell = tr.cells[col];
+                if (!cell || cell.querySelector('.tm-mgt-jump')) return;
+                const m = cell.textContent.replace(/\s+/g, ' ').match(DELIVERY_RE);
+                if (!m) return;
+                const no = m[1];
+                const btn = document.createElement('span');
+                btn.className = 'tm-mgt-jump';
+                btn.title = '종합관리에서 이 출고번호 조회 (새 탭)';
+                btn.textContent = '🔍 종합';
+                btn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    window.open(`/admin/mgt/index?delivery_no=${encodeURIComponent(no)}#${HASH_KEY}${encodeURIComponent(no)}`, '_blank');
+                }, true);
+                cell.appendChild(document.createElement('br'));
+                cell.appendChild(btn);
+            });
+        };
+
+        const start = () => {
+            addButtons();
+            const tbody = document.getElementById('packingListTbody');
+            if (tbody) new MutationObserver(() => addButtons()).observe(tbody, { childList: true });
+        };
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+        else start();
+    }
+
+    // ===== 2) 종합관리 화면: 넘겨받은 출고번호로 자동 검색 =====
+    if (location.pathname.startsWith('/admin/mgt/index') && location.hash.includes(HASH_KEY)) {
+        const no = decodeURIComponent(location.hash.split(HASH_KEY)[1] || '').trim();
+        // 새로고침해도 다시 검색하지 않도록 주소의 # 부분은 바로 지움
+        history.replaceState(null, '', location.pathname + location.search);
+        if (!no) return;
+
+        let tries = 0;
+        const run = () => {
+            const form = document.getElementById('search-form');
+            const input = form && form.querySelector('#delivery_no');
+            if (!input) { if (++tries < 50) setTimeout(run, 200); return; }
+
+            // 서버가 주소의 delivery_no로 이미 조회해 줬으면 그대로 둠
+            if (input.value.trim() === no) return;
+
+            input.value = no;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const btn = form.querySelector('button[type="submit"], input[type="submit"]') ||
+                Array.from(document.querySelectorAll('button, a.btn, input[type="button"]'))
+                    .find(b => ((b.innerText || b.value || '').replace(/[^가-힣A-Za-z]/g, '')) === '검색');
+            if (btn) btn.click();
+            else if (typeof form.requestSubmit === 'function') form.requestSubmit();
+            else form.submit();
+        };
+        // 블록 2가 검색폼을 재배치할 시간을 조금 줌
+        setTimeout(run, 600);
+    }
 })();
