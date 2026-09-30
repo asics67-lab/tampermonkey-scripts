@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         [관리] 전사공통 도구 (업무채팅알람봇 + 피킹현황카운터)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.2.1
+// @version      1.2.2
 // @description  admin 전체 화면에서 공통으로 쓰는 도구 모음. 원본: 사내 만능 테스크 채팅 알람봇 v1.3 + 출고관리 피킹중/대기중 전체 합계 알림 v1.96
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin*
+// @match        https://platform.co.jp/admin*
 // @exclude      https://www.platform.co.jp/admin/print/*
 // @exclude      https://platform.co.jp/admin/print/*
 // @grant        GM_xmlhttpRequest
@@ -13,9 +14,11 @@
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @connect      www.platform.co.jp
+// @connect      platform.co.jp
 // @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/05-전사공통/common-tools.user.js
 // @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/05-전사공통/common-tools.user.js
 // ==/UserScript==
+// [www 없는 주소 대응] platform.co.jp(www 없이) 로 접속해도 동작하도록 @match 추가, 사이트 내부 요청 주소를 현재 접속 주소 기준(location.origin)으로 변경
 
 /*
  * ============================================================
@@ -77,7 +80,7 @@
         console.warn('[업무채팅 알람봇] 이름이 설정되지 않아 동작을 중단합니다.');
         return;
     }
-    const BASE_URL = "https://www.platform.co.jp/admin/task";
+    const BASE_URL = location.origin + "/admin/task";
 
     const MSG_SEPARATOR = "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
 
@@ -652,7 +655,7 @@
         const indicator = document.getElementById('sync-indicator');
         if (indicator) indicator.textContent = "갱신 중...";
 
-        const baseOriginUrl = "https://www.platform.co.jp/admin/shipping/packing?s_status=1";
+        const baseOriginUrl = location.origin + "/admin/shipping/packing?s_status=1";
 
         GM_xmlhttpRequest({
             method: "GET",

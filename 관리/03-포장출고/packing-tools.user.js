@@ -1,13 +1,17 @@
 // ==UserScript==
 // @name         [관리] 포장출고 통합 도구 (회원사메모 + 에토와르매칭 + LH/OH중복알림 + 피킹리스트 + 오션배너)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.1.0
+// @version      1.1.1
 // @description  포장/출고(shipping/packing) 화면 통합본. 원본: 회원사 특이사항(메모) 공유 시스템 v4.7 + 에토와르 주소 매칭 v21.0 + LH/OH Tracking 중복 알림 v1.4.0 + AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정) + 포장 오션 강조 배너 v1.1
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
+// @match        https://platform.co.jp/admin/shipping/packing*
 // @match        https://www.platform.co.jp/admin/users*
+// @match        https://platform.co.jp/admin/users*
 // @match        https://www.platform.co.jp/admin/shipping/packingfinished*
+// @match        https://platform.co.jp/admin/shipping/packingfinished*
 // @match        https://www.platform.co.jp/admin/shipping/finished*
+// @match        https://platform.co.jp/admin/shipping/finished*
 // @match        *://*.aispel.com/admin/shipping/packing*
 // @match        https://platform.aispel.com/admin/shipping/packing*
 // @require      https://code.jquery.com/jquery-3.6.0.min.js
@@ -16,6 +20,7 @@
 // @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/03-포장출고/packing-tools.user.js
 // @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/03-포장출고/packing-tools.user.js
 // ==/UserScript==
+// [www 없는 주소 대응] platform.co.jp(www 없이) 로 접속해도 동작하도록 @match 추가, 사이트 내부 요청 주소를 현재 접속 주소 기준(location.origin)으로 변경
 
 /*
  * ============================================================
@@ -104,7 +109,7 @@
                 }
 
                 $.ajax({
-                    url: 'https://www.platform.co.jp/admin/users',
+                    url: location.origin + '/admin/users',
                     type: 'GET',
                     data: {
                         action: 'search',
@@ -147,7 +152,7 @@
                         const hasMemo = processedMemo.length > 0;
                         const memoContent = hasMemo ? processedMemo : '등록된 회원사 고유 특이사항이 없습니다.';
 
-                        const finalUrl = 'https://www.platform.co.jp/admin/users?action=search&search_word=' + searchKeyword + '&autooppen=' + foundUserId;
+                        const finalUrl = location.origin + '/admin/users?action=search&search_word=' + searchKeyword + '&autooppen=' + foundUserId;
 
                         const $modalDialog = $('#packingModal .modal-dialog');
 
@@ -400,7 +405,7 @@
 
         GM_xmlhttpRequest({
             method: "GET",
-            url: "https://www.platform.co.jp/admin/store/trackingno?pagesize=500",
+            url: location.origin + "/admin/store/trackingno?pagesize=500",
             onload: function(response) {
                 if (response.status !== 200) return;
 
@@ -446,7 +451,7 @@
             return;
         }
 
-        let targetUrl = "https://www.platform.co.jp/admin/store/trackingno?pagesize=500&user_id=" + encodeURIComponent(currentTargetClientCode) + "&supplier_id=25";
+        let targetUrl = location.origin + "/admin/store/trackingno?pagesize=500&user_id=" + encodeURIComponent(currentTargetClientCode) + "&supplier_id=25";
 
         GM_xmlhttpRequest({
             method: "GET",
@@ -553,7 +558,7 @@
 (function () {
     'use strict';
 
-    const MGT_SEARCH_URL = 'https://www.platform.co.jp/admin/mgt/index';
+    const MGT_SEARCH_URL = location.origin + '/admin/mgt/index';
     const DELIVERY_NO_PATTERN = /^(LH|OH)/i;
     const CACHE_TTL_MS = 5 * 60 * 1000;
 

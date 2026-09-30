@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.6.2
+// @version      1.7.0
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
+// @match        https://platform.co.jp/*
 // @match        https://platform.aispel.com/admin/*
 // @grant        GM_addStyle
 // @run-at       document-start
@@ -12,6 +13,7 @@
 // @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/포장/scan-tools.user.js
 // @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/포장/scan-tools.user.js
 // ==/UserScript==
+// [www 없는 주소 대응] platform.co.jp(www 없이) 로 접속해도 동작하도록 @match 추가, 사이트 내부 요청 주소를 현재 접속 주소 기준(location.origin)으로 변경
 
 /*
  * ============================================================
@@ -174,6 +176,13 @@
  *  - [블록 2] 스캔 상태 표시: 진행 중 = 주황 배지 "スキャン 1/3 (남은 2)",
  *    완료 = 초록 배지 "✅ 완료 3/3" + 행 연한 초록, 초과 = 빨간 "⚠ 과다스캔",
  *    미스캔 = 기존처럼 흐리게 표시.
+ *
+ *  v1.7.0 추가 기능 (요청: "같은 JAN이 목록에서 떨어져 있으면 스캔하다 헷갈린다")
+ *  - [블록 2] 같은 트래킹(또는 트래킹 없는 SHOP구매) 안에서 JAN코드가 같은 목록들을
+ *    항상 붙어서 나오도록 정렬합니다(첫 번째 목록 위치로 모임).
+ *  - [블록 2] 같은 JAN이 2개 이상 목록에 있으면 JAN 칸에 그룹 색 테두리 +
+ *    "🔗 같은 JAN n목록" 배지를 붙이고, 그룹 위/아래에 같은 색 선을 그어 한 묶음으로 보이게 합니다.
+ *    (트래킹이 달라서 붙일 수 없는 경우에도 색·배지는 똑같이 표시)
  *
  *  v1.6.2 버그 수정 (요청: "회원 선택칸에 업체번호를 치면 아래 검색칸에도 같이 입력된다")
  *  - [블록 1] 고속 스캔 기능이 화면 전체의 키 입력을 모으고 있어서, 회원 선택 드롭다운
@@ -674,6 +683,8 @@
         let didMerge = false;
         // [v1.5.6] 정렬 복원용: 각 행의 정규화된 트래킹번호를 기억해 둡니다.
         const rowTrackingMap = new Map();
+        // [v1.7.0] 같은 JAN끼리 붙여서 정렬하기 위해 각 행의 JAN코드를 기억해 둡니다.
+        const rowJanMap = new Map();
 
         // data-quantity 속성을 최우선으로 신뢰. 없으면 배지(.scan-counter-badge)는
         // 제외하고 숫자만 파싱해서 오염을 방지.
@@ -768,6 +779,7 @@
             const trackingCell = row.querySelector('td[data-trackingno]');
             const trackingVal = normalizeTrackingNo(trackingCell ? trackingCell.getAttribute('data-trackingno') : '');
             rowTrackingMap.set(row, trackingVal);
+            rowJanMap.set(row, janCode);
 
             // [v1.5.5 수정] 로케이션은 병합 "조건"에서 제외했습니다. 트래킹번호는 고객이
             // 직접 입력하는 값이라, 같은 배송건인데도 입고 시점에 로케이션이 서로 다르게
@@ -863,10 +875,23 @@
         const trackingOrderIndex = new Map();
         trackingFirstSeenOrder.forEach((t, idx) => trackingOrderIndex.set(t, idx));
 
+        // [v1.7.0] 같은 트래킹 그룹 안에서 JAN이 같은 행은 처음 나온 행 위치로 모읍니다.
+        const origIndex = new Map();
+        const janFirstIndex = new Map();
+        survivorRows.forEach((r, idx) => {
+            origIndex.set(r, idx);
+            const gk = `${rowTrackingMap.get(r) || ''}|${rowJanMap.get(r) || ''}`;
+            if (!janFirstIndex.has(gk)) janFirstIndex.set(gk, idx);
+        });
+        const janGroupIdx = (r) => janFirstIndex.get(`${rowTrackingMap.get(r) || ''}|${rowJanMap.get(r) || ''}`) ?? origIndex.get(r);
+
         const sortedSurvivors = survivorRows.slice().sort((a, b) => {
             const ta = trackingOrderIndex.get(rowTrackingMap.get(a) || '') ?? 0;
             const tb = trackingOrderIndex.get(rowTrackingMap.get(b) || '') ?? 0;
-            return ta - tb; // 그룹 간 순서만 바꾸고, 같은 그룹 안에서는 원래 순서 유지(안정 정렬)
+            if (ta !== tb) return ta - tb; // 트래킹 그룹 순서 우선
+            const ja = janGroupIdx(a), jb = janGroupIdx(b);
+            if (ja !== jb) return ja - jb; // 같은 JAN끼리 붙임
+            return origIndex.get(a) - origIndex.get(b); // 나머지는 원래 순서
         });
 
         const isAlreadyGrouped = sortedSurvivors.every((r, idx) => survivorRows[idx] === r);
@@ -1263,6 +1288,51 @@
                 // 예외: Capsule toy(カプセルトイ) 상품은 Set이 있어도 BOX 표시 안 함
                 const isCapsuleToy = /capsule\s*toy|カプセルトイ/i.test(setName);
                 row.classList.toggle('tm-set-row', !isCapsuleToy && /(^|[^a-z])set(?![a-z])/i.test(setName));
+            });
+
+            // [v1.7.0] 같은 JAN이 여러 목록에 있으면 그룹 색 테두리 + 배지 + 위/아래 선 표시
+            if (!window.__tmSameJanStyleAdded) {
+                window.__tmSameJanStyleAdded = true;
+                GM_addStyle(`
+                    #packingItemsTbody tr.tm-samejan > td:nth-child(6) {
+                        box-shadow: inset 0 0 0 3px var(--tm-samejan-color) !important;
+                        position: relative;
+                    }
+                    #packingItemsTbody tr.tm-samejan > td:nth-child(6)::after {
+                        content: attr(data-tm-samejan-label); display: block; width: fit-content;
+                        margin: 4px auto 0; padding: 1px 8px; border-radius: 10px;
+                        background: var(--tm-samejan-color); color: #fff;
+                        font-size: 12px; font-weight: bold; white-space: nowrap;
+                    }
+                    #packingItemsTbody tr.tm-samejan-first > td { border-top: 3px solid var(--tm-samejan-color) !important; }
+                    #packingItemsTbody tr.tm-samejan-last > td { border-bottom: 3px solid var(--tm-samejan-color) !important; }
+                `);
+            }
+            const SAME_JAN_COLORS = ['#e91e63', '#8e24aa', '#00897b', '#3949ab', '#6d4c41', '#c62828', '#00838f', '#7cb342'];
+            const rowJan = (row) => (
+                row.getAttribute('data-jancode') || row.cells[5]?.innerText.trim() || row.cells[4]?.innerText.trim() || ''
+            ).replace(/\s+/g, '');
+            const janCount = new Map();
+            rows.forEach(row => { const j = rowJan(row); if (j) janCount.set(j, (janCount.get(j) || 0) + 1); });
+            const janColor = new Map();
+            rows.forEach((row, idx) => {
+                const j = rowJan(row);
+                const n = j ? (janCount.get(j) || 0) : 0;
+                row.classList.remove('tm-samejan', 'tm-samejan-first', 'tm-samejan-last');
+                const janCell = row.cells[5];
+                if (n < 2) {
+                    row.style.removeProperty('--tm-samejan-color');
+                    if (janCell) janCell.removeAttribute('data-tm-samejan-label');
+                    return;
+                }
+                if (!janColor.has(j)) janColor.set(j, SAME_JAN_COLORS[janColor.size % SAME_JAN_COLORS.length]);
+                row.style.setProperty('--tm-samejan-color', janColor.get(j));
+                row.classList.add('tm-samejan');
+                if (janCell) janCell.setAttribute('data-tm-samejan-label', `🔗 같은 JAN ${n}목록`);
+                const prevSame = idx > 0 && rowJan(rows[idx - 1]) === j;
+                const nextSame = idx < rows.length - 1 && rowJan(rows[idx + 1]) === j;
+                if (!prevSame) row.classList.add('tm-samejan-first');
+                if (!nextSame) row.classList.add('tm-samejan-last');
             });
 
             updateRemainingCounter(rows.length, rows.length - checkedCount);

@@ -1,19 +1,22 @@
 // ==UserScript==
 // @name         [입고] 트래킹넘버 모달 통합 (마스터패치본 + 회원명고정 + 하이픈표시 + JAN강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.0
+// @version      1.3.1
 // @description  입고 처리 모달(trackingno) 및 라벨 인쇄(locationlabel) 화면 통합본. 원본: A-1-13(베이스) + A-1-2(회원명 고정) + A-1-3(하이픈 표시) + A-1-12 중 입고 JAN강조 발췌
 // @author       물류팀
 // @match        https://platform.aispel.com/admin/store/trackingno*
 // @match        https://www.platform.co.jp/admin/store/trackingno*
+// @match        https://platform.co.jp/admin/store/trackingno*
 // @match        *://platform.aispel.com/admin/print/locationlabel/*
 // @match        *://www.platform.co.jp/admin/print/locationlabel/*
+// @match        *://platform.co.jp/admin/print/locationlabel/*
 // @require      https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js
 // @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/입고/01-tracking-modal.user.js
 // @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/입고/01-tracking-modal.user.js
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
+// [www 없는 주소 대응] platform.co.jp(www 없이) 로 접속해도 동작하도록 @match 추가, 사이트 내부 요청 주소를 현재 접속 주소 기준(location.origin)으로 변경
 
 /*
  * ============================================================

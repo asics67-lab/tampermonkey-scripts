@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         [관리] 종합관리 통합 도구 (오류메시지 히스토리 + 상세검색 UI개선 + 엔터키검색 + 회원선택 엔터)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.1.0
+// @version      1.1.1
 // @description  종합관리(mgt/index) 및 출고 오류(shipping/error) 화면 통합본. 원본: 오류 메시지 로컬 자동 백업 및 히스토리 추적 시스템 v10.5 + 상세검색 UI 개선 스크립트 v20.0 + 상세검색 엔터키 활성화 v1.0
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/mgt/index*
+// @match        https://platform.co.jp/admin/mgt/index*
 // @match        https://www.platform.co.jp/admin/shipping/error*
+// @match        https://platform.co.jp/admin/shipping/error*
 // @icon         https://www.platform.co.jp/ui/custom/images/favicon.ico
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -13,6 +15,7 @@
 // @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/02-종합관리/mgt-tools.user.js
 // @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/02-종합관리/mgt-tools.user.js
 // ==/UserScript==
+// [www 없는 주소 대응] platform.co.jp(www 없이) 로 접속해도 동작하도록 @match 추가, 사이트 내부 요청 주소를 현재 접속 주소 기준(location.origin)으로 변경
 
 /*
  * ============================================================
@@ -118,7 +121,7 @@
 
             $.ajax({
                 type: 'POST',
-                url: 'https://www.platform.co.jp/admin/mgt/ajax_get_order_log',
+                url: location.origin + '/admin/mgt/ajax_get_order_log',
                 data: { orderno: cleanNo },
                 dataType: 'json'
             }).done(function(json) {
@@ -196,7 +199,7 @@
 
             $('#custom-error-msg-box').remove();
 
-            const searchUrl = `https://www.platform.co.jp/admin/shipping/error?target=2&keyword=${encodeURIComponent(deliveryNo)}`;
+            const searchUrl = `${location.origin}/admin/shipping/error?target=2&keyword=${encodeURIComponent(deliveryNo)}`;
 
             $.ajax({
                 url: searchUrl,

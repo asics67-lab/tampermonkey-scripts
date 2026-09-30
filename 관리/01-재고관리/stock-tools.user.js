@@ -1,17 +1,22 @@
 // ==UserScript==
 // @name         [관리] 재고관리 통합 도구 (통관방식조회 + 다나오로시 + FL로케이션현황)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.2.0
+// @version      1.2.1
 // @description  재고관리(settlement/stock) 및 로케이션 조회 화면 통합본. 원본: 재고관리 통관방식 조회 v3.1 + 구매대행 다나오로시 출력본 v24.1(엑셀 합산/구분선 버그 수정) + FL 로케이션 사용 현황 v11.5
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/settlement/stock*
+// @match        https://platform.co.jp/admin/settlement/stock*
 // @match        https://www.platform.co.jp/admin/store/location-jan*
+// @match        https://platform.co.jp/admin/store/location-jan*
 // @match        https://www.platform.co.jp/admin/store/location-tracking*
+// @match        https://platform.co.jp/admin/store/location-tracking*
 // @grant        GM_xmlhttpRequest
 // @connect      www.platform.co.jp
+// @connect      platform.co.jp
 // @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/01-재고관리/stock-tools.user.js
 // @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/01-재고관리/stock-tools.user.js
 // ==/UserScript==
+// [www 없는 주소 대응] platform.co.jp(www 없이) 로 접속해도 동작하도록 @match 추가, 사이트 내부 요청 주소를 현재 접속 주소 기준(location.origin)으로 변경
 
 /*
  * ============================================================
@@ -141,7 +146,7 @@
             return Promise.resolve('무효');
         }
 
-        const searchUrl = 'https://www.platform.co.jp/admin/store/jancode' +
+        const searchUrl = location.origin + '/admin/store/jancode' +
             '?target=2&keyword=' + encodeURIComponent(searchKeyword);
 
         return new Promise(resolve => {

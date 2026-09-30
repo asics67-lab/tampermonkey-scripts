@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         [관리] 판매관리 통합 도구 (엑셀 다운로드 + 쿠지 이미지 엑셀)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.0.0
+// @version      1.0.1
 // @description  판매관리(shop) 화면 통합본. 원본: 판매관리 페이지 엑셀 다운로드 v2.3 + 판매관리 - 쿠지 정보 엑셀 다운로드 v41.0
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shop/order*
+// @match        https://platform.co.jp/admin/shop/order*
 // @match        https://www.platform.co.jp/admin/shop/index*
+// @match        https://platform.co.jp/admin/shop/index*
 // @require      https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js
 // @grant        GM_xmlhttpRequest
 // @connect      assets.1kuji.com
@@ -13,6 +15,7 @@
 // @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/04-판매관리/shop-tools.user.js
 // @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/04-판매관리/shop-tools.user.js
 // ==/UserScript==
+// [www 없는 주소 대응] platform.co.jp(www 없이) 로 접속해도 동작하도록 @match 추가, 사이트 내부 요청 주소를 현재 접속 주소 기준(location.origin)으로 변경
 
 /*
  * ============================================================

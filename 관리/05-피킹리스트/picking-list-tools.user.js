@@ -1,12 +1,15 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.0.0
+// @version      1.0.1
 // @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). 원래 포장/packing-tools.user.js 안에 있었으나, 실제로는 관리팀이 프린트하는 기능이라 관리 폴더로 옮겼습니다.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
+// @match        https://platform.co.jp/admin/shipping/packing*
 // @match        https://www.platform.co.jp/admin/shipping/packingfinished*
+// @match        https://platform.co.jp/admin/shipping/packingfinished*
 // @match        https://www.platform.co.jp/admin/shipping/finished*
+// @match        https://platform.co.jp/admin/shipping/finished*
 // @match        *://*.aispel.com/admin/shipping/packing*
 // @match        https://platform.aispel.com/admin/shipping/packing*
 // @require      https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js
@@ -14,6 +17,7 @@
 // @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/05-피킹리스트/picking-list-tools.user.js
 // @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/05-피킹리스트/picking-list-tools.user.js
 // ==/UserScript==
+// [www 없는 주소 대응] platform.co.jp(www 없이) 로 접속해도 동작하도록 @match 추가, 사이트 내부 요청 주소를 현재 접속 주소 기준(location.origin)으로 변경
 
 /*
  * ============================================================
