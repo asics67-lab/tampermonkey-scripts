@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] 입고데이터 보호 도구 (삭제 이중확인 + 삭제기록 + 사라진입고 탐지)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.1.2
+// @version      1.1.3
 // @description  입고 처리 목록(일괄 삭제)과 Location관리(🗑) 화면에서 입고 데이터가 실수로 지워지는 것을 막고, 삭제 기록을 남기며, 기록 없이 사라진 입고 건을 찾아줍니다.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/store/trackingno*
@@ -46,6 +46,8 @@
  *    입고가 취소되고, 이력에 削除 기록도 알림도 남지 않음. 그런데 라벨은 이미 출력되어
  *    상자에 붙어 있을 수 있음 (09-24 두 건이 이 경우로 추정).
  *  - 입고창 🗑: 삭제되면 🗂 삭제 기록에 남김. (v1.1.2: 추가 확인창 없이 기록만)
+ *  - v1.1.3: 같은 트래킹이 여러 줄(박스 여러 개)인 건이 있으면 "목록을 다 못 읽음"으로
+ *    잘못 판단해 자동 점검 전체를 건너뛰던 버그 수정 (트래킹 수가 아닌 줄 수로 비교).
  *  - 입고창에서 스캔된 트래킹을 모두 기록해 두고(14일), 사라진 입고 점검 대상에 포함.
  *    → 창을 닫기 전에 지운 건도 잡힘. 입고창 삭제 기록이 있는 건은 "입고창에서 삭제"로
  *      따로 표시(경고창 없음), 기록이 없는 건만 "기록 없이 사라짐"으로 경고.
@@ -332,6 +334,7 @@
     async function fetchCurrentList() {
         const map = {};
         let total = null;
+        let rowCount = 0; // [v1.1.3] 같은 트래킹이 여러 줄(박스 여러 개)일 수 있으므로 줄 수로 비교
         for (let page = 1; page <= 20; page++) {
             const html = await fetch(`/admin/store/trackingno?pagesize=1000&page=${page}`, { credentials: 'same-origin' }).then((r) => r.text());
             const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -340,6 +343,7 @@
                 total = t ? parseInt(t.replace(/,/g, ''), 10) : null;
             }
             const rows = [...doc.querySelectorAll('table tbody tr')].filter((tr) => tr.querySelector('.show_tracking_page'));
+            rowCount += rows.length;
             rows.forEach((tr) => {
                 const info = readRowInfo(tr);
                 const date = (tr.cells[8]?.innerText.trim() || '').slice(0, 10);
@@ -347,7 +351,7 @@
             });
             if (rows.length < 1000) break;
         }
-        const count = Object.keys(map).length;
+        const count = rowCount;
         return { map, complete: total === null || count >= total, total, count };
     }
 
