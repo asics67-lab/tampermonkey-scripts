@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] 입고데이터 보호 도구 (삭제 이중확인 + 삭제기록 + 사라진입고 탐지)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.0.0
+// @version      1.1.2
 // @description  입고 처리 목록(일괄 삭제)과 Location관리(🗑) 화면에서 입고 데이터가 실수로 지워지는 것을 막고, 삭제 기록을 남기며, 기록 없이 사라진 입고 건을 찾아줍니다.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/store/trackingno*
@@ -40,6 +40,15 @@
  *     - 입고 목록을 주기적으로(30분 간격, 화면 열 때) 저장해 두었다가, 다음에 봤을 때
  *       없어진 건 중 이력에 포장/削除가 없는 건을 "의심 건"으로 표시.
  *     - 「🔍 사라진 입고 확인」 버튼: 최근 N일 입고안내 메시지의 트래킹도 함께 점검.
+ *
+ *  v1.1.0 (2026-09-30) — 실제 원인 반영
+ *  - 확인 결과: 입고창(Tracking No.입고 처리)에서 스캔 후 창을 닫기 전에 🗑로 지우면
+ *    입고가 취소되고, 이력에 削除 기록도 알림도 남지 않음. 그런데 라벨은 이미 출력되어
+ *    상자에 붙어 있을 수 있음 (09-24 두 건이 이 경우로 추정).
+ *  - 입고창 🗑: 삭제되면 🗂 삭제 기록에 남김. (v1.1.2: 추가 확인창 없이 기록만)
+ *  - 입고창에서 스캔된 트래킹을 모두 기록해 두고(14일), 사라진 입고 점검 대상에 포함.
+ *    → 창을 닫기 전에 지운 건도 잡힘. 입고창 삭제 기록이 있는 건은 "입고창에서 삭제"로
+ *      따로 표시(경고창 없음), 기록이 없는 건만 "기록 없이 사라짐"으로 경고.
  * ============================================================
  */
 
@@ -52,6 +61,10 @@
     const KEY_LOG = 'tm_guard_delete_log';
     const KEY_SNAPSHOT = 'tm_guard_snapshot';
     const KEY_MISSING = 'tm_guard_missing';
+    const KEY_SEEN = 'tm_guard_seen_inbound';      // 입고창에서 스캔된 트래킹 (14일 보관)
+    const KEY_MODAL_DEL = 'tm_guard_modal_deleted'; // 입고창 🗑로 삭제된 트래킹
+    const SEEN_KEEP_MS = 14 * 86400000;
+    const KEY_DISMISSED = 'tm_guard_dismissed';    // 「확인함」 누른 건 (다시 안 띄움)
     const SNAPSHOT_INTERVAL_MS = 30 * 60 * 1000;
 
     const norm = (v) => String(v || '').replace(/[^0-9A-Za-z]/g, '').toUpperCase();
@@ -194,7 +207,7 @@
                 title: `🗑 입고 데이터 일괄 삭제 — ${items.length}건`,
                 bodyHTML: `<div class="tg-warn">아래 입고 데이터가 삭제됩니다. 이 방법으로 지우면 입고 이력에 削除 기록이 남지 않을 수 있습니다.</div>
                     ${bigWarn}
-                    <table><thead><tr><th>Tracking No.</th><th>회원사</th><th>로케이션</th></tr></thead><tbody>${rows}</tbody></table>`,
+                    <table><thead><tr><th>구분</th><th>Tracking No.</th><th>회원사</th><th>로케이션</th></tr></thead><tbody>${rows}</tbody></table>`,
                 expected: items.length,
                 hint: `삭제하려면 삭제할 건수 <b style="color:#ff3e1d;font-size:16px">${items.length}</b> 을(를) 입력하세요.`
             });
@@ -203,6 +216,59 @@
             addDeleteLog({ page: '입고 목록 · 일괄 삭제', items });
             bypassBulk = true;
             btn.click(); // 사이트 원래 일괄 삭제 실행 (사이트 확인창이 한 번 더 뜸)
+        }, true);
+    }
+
+    /* =========================================================
+     * [1-2] 입고창(Tracking No.입고 처리): 🗑 삭제 확인 + 스캔 기록 (v1.1.0)
+     * ========================================================= */
+    function readScanRow(tr) {
+        const c = tr ? tr.cells : [];
+        return {
+            tracking: tr?.getAttribute('data-trackingno') || c[4]?.innerText.trim() || '',
+            member: c[1]?.innerText.trim() || '',
+            location: c[6]?.innerText.trim() || ''
+        };
+    }
+    function recordSeen(info) {
+        if (!info.tracking) return;
+        const now = Date.now();
+        const list = GM_getValue(KEY_SEEN, []).filter((x) => now - x.ts < SEEN_KEEP_MS);
+        const k = norm(info.tracking) + '|' + info.location;
+        if (list.some((x) => norm(x.tracking) + '|' + x.location === k)) return;
+        list.unshift({ ...info, ts: now, at: nowStr(), admin: getAdminName() });
+        GM_setValue(KEY_SEEN, list.slice(0, 3000));
+    }
+
+    if (IS_TRACKING) {
+        // 입고창에 줄이 생길 때마다 기록
+        const scanObs = () => {
+            const tb = document.getElementById('scan-tbody');
+            if (!tb) { setTimeout(scanObs, 1000); return; }
+            const grab = () => tb.querySelectorAll('tr').forEach((tr) => recordSeen(readScanRow(tr)));
+            grab();
+            new MutationObserver(grab).observe(tb, { childList: true });
+        };
+        scanObs();
+
+        // 입고창 🗑: 확인창 없이 삭제 내역만 기록 (사이트 기본 확인창은 그대로)
+        window.addEventListener('click', (e) => {
+            const btn = e.target.closest && e.target.closest('#scan-tbody .btn-delete');
+            if (!btn) return;
+            const tr = btn.closest('tr');
+            const info = readScanRow(tr);
+            // 먼저 기록해 두고(점검과 겹쳐도 "입고창에서 삭제"로 분류되도록), 실제로 안 지워졌으면 되돌림
+            const stamp = Date.now();
+            const del = GM_getValue(KEY_MODAL_DEL, []).filter((x) => stamp - x.ts < SEEN_KEEP_MS);
+            del.unshift({ ...info, ts: stamp, at: nowStr(), admin: getAdminName() });
+            GM_setValue(KEY_MODAL_DEL, del.slice(0, 2000));
+            setTimeout(() => {
+                if (tr && tr.isConnected) { // 취소했거나 실패 → 기록 되돌림
+                    GM_setValue(KEY_MODAL_DEL, GM_getValue(KEY_MODAL_DEL, []).filter((x) => x.ts !== stamp));
+                    return;
+                }
+                addDeleteLog({ page: '입고창 · 🗑 (입고 취소)', items: [info] });
+            }, 5000);
         }, true);
     }
 
@@ -323,10 +389,40 @@
         return out;
     }
 
+    /** 입고창 삭제 기록이 있으면 "입고창에서 삭제", 없으면 "기록 없이 사라짐" */
+    function classify(item) {
+        const del = GM_getValue(KEY_MODAL_DEL, []).find((x) => norm(x.tracking) === norm(item.tracking));
+        if (del) return { ...item, kind: 'modal', note: `${del.at} ${del.admin} 입고창에서 삭제` };
+        return { ...item, kind: 'unknown' };
+    }
+    const getMissing = () => GM_getValue(KEY_MISSING, []).map((x) => (x.kind === 'modal' ? x : classify(x)));
+    const unknownCount = () => getMissing().filter((x) => x.kind !== 'modal').length;
+
+    /** 입고창에서 스캔됐는데 지금 목록에 없는 건 점검 */
+    async function checkSeen(curMap) {
+        const now = Date.now();
+        const seen = GM_getValue(KEY_SEEN, []).filter((x) => now - x.ts < SEEN_KEEP_MS);
+        const byKey = new Map();
+        seen.forEach((x) => { if (!curMap[norm(x.tracking)]) byKey.set(norm(x.tracking), x); });
+        const results = await mapLimit([...byKey.values()], 4, async (x) => {
+            const logs = await fetchLogs(x.tracking);
+            const j = judge(logs);
+            if (!j.suspicious) return null;
+            return classify({
+                tracking: x.tracking, member: x.member, location: j.last.location || x.location,
+                inboundAt: j.last.created_at, inboundBy: j.last.admin_name || x.admin || '',
+                foundAt: nowStr(), source: '입고창 스캔 기록'
+            });
+        });
+        const found = results.filter(Boolean);
+        if (found.length) saveMissing(found);
+        return found;
+    }
+
     function saveMissing(found) {
         const list = GM_getValue(KEY_MISSING, []);
         const keyOf = (x) => `${norm(x.tracking)}|${x.inboundAt}`;
-        const existing = new Set(list.map(keyOf));
+        const existing = new Set(list.map(keyOf).concat(GM_getValue(KEY_DISMISSED, [])));
         found.forEach((f) => { if (!existing.has(keyOf(f))) list.unshift(f); });
         GM_setValue(KEY_MISSING, list.slice(0, 300));
         updateBadge();
@@ -335,11 +431,13 @@
     /** 이전 스냅샷과 비교해서 사라진 건 확인 (자동 실행) */
     async function snapshotAndCompare(force) {
         const prev = GM_getValue(KEY_SNAPSHOT, null);
-        if (!force && prev && Date.now() - prev.ts < SNAPSHOT_INTERVAL_MS) return [];
         const cur = await fetchCurrentList();
         if (!cur.complete) { console.warn('[입고보호] 목록을 전부 못 읽어서 비교를 건너뜀', cur); return []; }
 
-        let found = [];
+        // 입고창 스캔 기록 점검은 화면을 열 때마다 (가벼움)
+        let found = await checkSeen(cur.map);
+        if (!force && prev && Date.now() - prev.ts < SNAPSHOT_INTERVAL_MS) return found;
+
         if (prev && prev.map) {
             const gone = Object.keys(prev.map).filter((k) => !cur.map[k]);
             const results = await mapLimit(gone, 4, async (k) => {
@@ -348,14 +446,15 @@
                 const j = judge(logs);
                 if (!j.suspicious) return null;
                 // 같은 트래킹이 다시 입고되어 현재 목록에 있으면 제외 (위에서 이미 걸러짐)
-                return {
+                return classify({
                     tracking: p.tracking, member: p.member, location: j.last.location || p.location,
                     inboundAt: j.last.created_at, inboundBy: j.last.admin_name || '',
                     foundAt: nowStr(), source: '목록 비교'
-                };
+                });
             });
-            found = results.filter(Boolean);
-            if (found.length) saveMissing(found);
+            const f2 = results.filter(Boolean);
+            if (f2.length) saveMissing(f2);
+            found = found.concat(f2);
         }
         GM_setValue(KEY_SNAPSHOT, { ts: Date.now(), at: nowStr(), map: cur.map });
         return found;
@@ -388,11 +487,11 @@
             const logs = await fetchLogs(t);
             const j = judge(logs);
             if (!j.suspicious) return null;
-            return {
+            return classify({
                 tracking: t, member: String(j.last.user_id || ''), location: j.last.location || '',
                 inboundAt: j.last.created_at, inboundBy: j.last.admin_name || '',
                 foundAt: nowStr(), source: `메시지 점검(${days}일)`
-            };
+            });
         }, (d, n) => onStatus(`이력 확인 중... ${d}/${n}`));
         const found = results.filter(Boolean);
         if (found.length) saveMissing(found);
@@ -400,18 +499,23 @@
     }
 
     function showMissing() {
-        const list = GM_getValue(KEY_MISSING, []);
+        const list = getMissing();
         const prev = GM_getValue(KEY_SNAPSHOT, null);
-        const rows = list.map((x, i) => `<tr>
+        const rows = list.map((x, i) => `<tr style="${x.kind === 'modal' ? 'color:#777' : ''}">
+                <td>${x.kind === 'modal'
+                    ? `<span style="background:#9e9e9e;color:#fff;border-radius:4px;padding:1px 6px;font-size:12px">입고창에서 삭제</span><br><small>${esc(x.note || '')}</small>`
+                    : '<span style="background:#ff3e1d;color:#fff;border-radius:4px;padding:1px 6px;font-size:12px">기록 없이 사라짐</span>'}</td>
                 <td><b>${esc(x.tracking)}</b></td><td>${esc(x.member)}</td><td>${esc(x.location)}</td>
                 <td style="white-space:nowrap">${esc(x.inboundAt)}<br><small>${esc(x.inboundBy)}</small></td>
                 <td style="white-space:nowrap"><small>${esc(x.foundAt)}<br>${esc(x.source)}</small></td>
                 <td><button class="tg-cancel tg-dismiss" data-i="${i}" style="padding:3px 8px">확인함</button></td></tr>`).join('');
         openModal({
-            title: `🔍 사라진 입고 (삭제 기록 없이 없어진 건) — ${list.length}건`,
+            title: `🔍 사라진 입고 — 기록 없음 ${unknownCount()}건 / 입고창 삭제 ${list.length - unknownCount()}건`,
             color: '#1e5aa8',
             bodyHTML: `<div>입고 이력의 마지막이 「입고」인데 지금 입고 목록에 없는 건입니다. 포장·削除 기록이 있는 정상 건은 제외했습니다.<br>
-                    실물 위치를 확인하고, 필요하면 다시 입고한 뒤 「확인함」을 눌러 목록에서 지우세요.</div>
+                    <b>기록 없이 사라짐</b>: 실물 위치를 확인하고, 필요하면 다시 입고하세요.<br>
+                    <b>입고창에서 삭제</b>: 입고창에서 입고를 취소한 건입니다. 라벨 로케이션에 짐·라벨이 남아 있지 않은지 확인하세요.<br>
+                    확인이 끝나면 「확인함」을 눌러 목록에서 지우세요.</div>
                     <div style="margin-top:6px;color:#777;font-size:12px">마지막 목록 저장: ${esc(prev ? prev.at : '없음')} (30분 간격으로 입고 화면을 열 때 자동 비교)</div>
                     ${list.length ? `<table><thead><tr><th>Tracking No.</th><th>회원사</th><th>로케이션</th><th>입고 일시/작업자</th><th>발견</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<div style="margin-top:10px">현재 의심 건이 없습니다.</div>'}
                     <div id="tg-status" style="margin-top:10px;color:#1e5aa8;font-weight:700"></div>`,
@@ -421,7 +525,12 @@
                 ov.querySelector('#tg-close').addEventListener('click', closeModal);
                 ov.querySelectorAll('.tg-dismiss').forEach((b) => b.addEventListener('click', () => {
                     const l = GM_getValue(KEY_MISSING, []);
-                    l.splice(parseInt(b.dataset.i, 10), 1);
+                    const [gone] = l.splice(parseInt(b.dataset.i, 10), 1);
+                    if (gone) {
+                        const dis = GM_getValue(KEY_DISMISSED, []);
+                        dis.unshift(`${norm(gone.tracking)}|${gone.inboundAt}`);
+                        GM_setValue(KEY_DISMISSED, dis.slice(0, 2000));
+                    }
                     GM_setValue(KEY_MISSING, l);
                     updateBadge();
                     showMissing();
@@ -449,8 +558,9 @@
     function updateBadge() {
         const b = document.getElementById('tm-guard-missing-btn');
         if (!b) return;
-        const n = GM_getValue(KEY_MISSING, []).length;
-        b.innerHTML = `🔍 사라진 입고 확인${n ? `<span class="tm-guard-badge">${n}</span>` : ''}`;
+        const n = unknownCount();
+        const m = GM_getValue(KEY_MISSING, []).length - n;
+        b.innerHTML = `🔍 사라진 입고 확인${n ? `<span class="tm-guard-badge">${n}</span>` : ''}${m ? `<span class="tm-guard-badge" style="background:#9e9e9e">${m}</span>` : ''}`;
         b.className = `btn btn-sm waves-effect tm-guard-btn ${n ? 'btn-warning' : 'btn-outline-secondary'}`;
     }
 
@@ -491,10 +601,12 @@
     if (IS_TRACKING) {
         // 입고 화면을 열 때마다(30분 간격) 자동으로 목록 저장 + 비교
         setTimeout(() => {
-            snapshotAndCompare(false).then((found) => {
-                if (found && found.length) {
-                    updateBadge();
-                    alert(`⚠ 삭제 기록 없이 사라진 입고가 ${found.length}건 발견되었습니다.\n「🔍 사라진 입고 확인」 버튼에서 확인하세요.`);
+            const before = unknownCount();
+            snapshotAndCompare(false).then(() => {
+                updateBadge();
+                const added = unknownCount() - before; // 새로 발견된 건만 알림 (같은 건 반복 알림 방지)
+                if (added > 0) {
+                    alert(`⚠ 삭제 기록 없이 사라진 입고가 ${added}건 새로 발견되었습니다.\n「🔍 사라진 입고 확인」 버튼에서 확인하세요.`);
                 }
             }).catch((err) => console.warn('[입고보호] 자동 비교 실패', err));
         }, 3000);

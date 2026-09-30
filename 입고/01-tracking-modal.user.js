@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] 트래킹넘버 모달 통합 (마스터패치본 + 회원명고정 + 하이픈표시 + JAN강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.1
+// @version      1.3.2
 // @description  입고 처리 모달(trackingno) 및 라벨 인쇄(locationlabel) 화면 통합본. 원본: A-1-13(베이스) + A-1-2(회원명 고정) + A-1-3(하이픈 표시) + A-1-12 중 입고 JAN강조 발췌
 // @author       물류팀
 // @match        https://platform.aispel.com/admin/store/trackingno*
@@ -55,6 +55,10 @@
  *  - 목록의 "Print"(라벨 재출력)를 눌러도 인쇄가 안 되던 문제 수정.
  *    원인: 이 스크립트가 원본 라벨 페이지(/admin/print/locationlabel/)를 무조건 차단·종료함.
  *    해결: 목록 Print 클릭을 가로채서 해당 행 정보로 55x45 커스텀 라벨을 만들어 인쇄.
+ *
+ *  v1.3.2 수정 사항 (2026-09-30)
+ *  - 입고창 🗑 삭제 요청이 서버 오류로 실패해도 화면 줄을 지워버려, 삭제된 것처럼 보이던
+ *    문제 수정. 이제 실패하면 줄을 남기고 "삭제 실패" 안내를 띄움.
  * ============================================================
  */
 
@@ -392,7 +396,11 @@
                         $btn.closest('tr').remove();
                         initLocationTrackingSync();
                     } else { alert(json.error_msg || "삭제 실패"); }
-                }).fail(function() { $btn.closest('tr').remove(); });
+                }).fail(function() {
+                    // [v1.3.2] 서버 삭제가 실패했는데 화면 줄만 지우면 "지워진 줄 알았는데 데이터는 남아 있는"
+                    // 상태가 되므로, 줄은 그대로 두고 알립니다.
+                    alert('삭제 실패: 서버와 통신하지 못했습니다. 입고 데이터는 아직 남아 있습니다.\n다시 시도하세요.');
+                });
             });
         }
 
