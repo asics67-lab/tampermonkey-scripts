@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.6.1
+// @version      1.6.2
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -174,6 +174,13 @@
  *  - [블록 2] 스캔 상태 표시: 진행 중 = 주황 배지 "スキャン 1/3 (남은 2)",
  *    완료 = 초록 배지 "✅ 완료 3/3" + 행 연한 초록, 초과 = 빨간 "⚠ 과다스캔",
  *    미스캔 = 기존처럼 흐리게 표시.
+ *
+ *  v1.6.2 버그 수정 (요청: "회원 선택칸에 업체번호를 치면 아래 검색칸에도 같이 입력된다")
+ *  - [블록 1] 고속 스캔 기능이 화면 전체의 키 입력을 모으고 있어서, 회원 선택 드롭다운
+ *    검색창(select2)에 업체번호를 입력하면 그 숫자가 스캔값으로 착각되어 아래 키워드
+ *    검색칸에 자동으로 들어가고 검색이 제출되던 문제를 수정했습니다.
+ *  - 이제 회원 선택 검색창·다른 입력칸·textarea 등에서 타이핑하는 키는 스캔으로 보지
+ *    않습니다. (바코드 스캔은 기존처럼 빈 화면 또는 키워드 검색칸에서 동작)
  * ============================================================
  */
 
@@ -356,6 +363,23 @@
             !!document.querySelector('input[name="keyword"]');
     }
 
+    // [v1.6.2] 키워드 검색칸이 아닌 다른 입력칸에서 타이핑 중인지 판별
+    function isTypingInOtherField(el) {
+        if (!el || !el.closest) return false;
+        // 회원 선택 드롭다운(select2 / chosen) 안의 검색창은 무조건 제외
+        if (el.closest('.select2-container, .select2-dropdown, .select2-drop, .chosen-container, .chosen-drop')) return true;
+        // 키워드 검색칸은 스캔 대상이므로 제외하지 않음
+        if (el.matches('input[name="keyword"]')) return false;
+        if (el.isContentEditable) return true;
+        const tag = el.tagName;
+        if (tag === 'TEXTAREA') return true;
+        if (tag === 'INPUT') {
+            const t = (el.type || 'text').toLowerCase();
+            return !['button', 'submit', 'reset', 'checkbox', 'radio', 'image', 'file', 'hidden'].includes(t);
+        }
+        return false;
+    }
+
     window.addEventListener('keydown', function(e) {
         // [v1.5.0 버그 수정] 이 스크립트가 사이트 전체(@match)에 걸려있다 보니, 포장
         // 목록 화면이 아닌 다른 화면(게시판 글쓰기 등)에서도 Enter/Tab 키를 가로채
@@ -373,6 +397,16 @@
         }
 
         if (isModalOpen()) return;
+
+        // [v1.6.2 버그 수정] 사용자가 다른 입력칸(회원 선택 드롭다운 검색창 등)에
+        // 직접 타이핑 중이면 스캔으로 보지 않고 그대로 통과시킵니다.
+        // 스캔은 포커스가 없는 상태(화면)나 키워드 검색칸에서만 모읍니다.
+        if (isTypingInOtherField(e.target)) {
+            clearTimeout(scanTimer);
+            finalString = "";
+            asciiBuffer = "";
+            return;
+        }
 
         // Alt-Code 처리 (로그상의 Shift 조합 대응)
         if (!isNaN(e.key) && e.altKey) {
