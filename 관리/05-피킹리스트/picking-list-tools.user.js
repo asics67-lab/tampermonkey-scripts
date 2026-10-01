@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.0.1
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). 원래 포장/packing-tools.user.js 안에 있었으나, 실제로는 관리팀이 프린트하는 기능이라 관리 폴더로 옮겼습니다.
+// @version      1.2.0
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -27,6 +27,13 @@
  *    맞게 관리/ 폴더로 옮겼습니다. 로직 자체는 변경 없이 그대로 가져왔습니다.
  *  - 버전 이력(v75.0 → v75.2, JAN코드+상품명 합산 버그수정 등)은 아래 원본 주석에
  *    그대로 남아있습니다.
+ *
+ *  v1.1.0 (아타리쿠지 세트수 표시)
+ *  - 사업자통관이 안 되는 메인 잔코드(…S숫자)는 출고목록에 안 나와서 세트수를 알 수 없었음.
+ *  - 아래 KUJI_SETS 에 "기준등급이 몇 개면 1세트" 를 등록해두면, 메인 잔코드가 없어도
+ *    피킹리스트 상단에 "○세트" 배너 + 기준등급 수량칸에 (○set) 를 표시함.
+ *  - 미등록 상품은 인쇄창에서 [세트 기준 등록] 버튼으로 그 PC에만 임시 등록 가능.
+ *    모든 PC에 적용하려면 KUJI_SETS 에 한 줄 추가해서 GitHub에 올리면 됨.
  * ============================================================
  */
 
@@ -41,6 +48,68 @@
     'use strict';
 
     const ITEMS_PER_PAGE = 18;
+
+    /* ==========================================================
+     * 아타리쿠지 세트 기준표 (모든 PC에 자동 업데이트로 배포됨)
+     * 형식:  '메인잔코드': { grade: '기준등급', perSet: 1세트당 수량 },
+     * 예) 4550624971331-1 이 2개 = 1세트  →  grade: '1', perSet: 2
+     * ========================================================== */
+    const KUJI_SETS = {
+        '4550624971331': { grade: '1', perSet: 2 }, // SANRIO ATARIKUJI BLANKET SET
+    };
+
+    /* ==========================================================
+     * [v1.2.0] 세트 기준 구글시트 (매월 입고 시 여기에 한 줄씩 추가)
+     *  시트 열 순서: A 잔코드 | B 기준등급 | C 1세트수량 | D 상품명(메모)
+     *  - KUJI_SHEET_CSV_URL : 파일 → 공유 → 웹에 게시 → CSV 로 받은 링크
+     *  - KUJI_SHEET_EDIT_URL: 시트를 평소에 여는 주소 (인쇄창 [시트에 등록] 버튼용)
+     *  우선순위: 구글시트 > 위 KUJI_SETS > 각 PC 임시등록
+     * ========================================================== */
+    const KUJI_SHEET_CSV_URL = '';
+    const KUJI_SHEET_EDIT_URL = '';
+
+    function parseCsv(text) {
+        const rows = [];
+        let row = [], cur = '', q = false;
+        for (let i = 0; i < text.length; i++) {
+            const c = text[i];
+            if (q) {
+                if (c === '"' && text[i + 1] === '"') { cur += '"'; i++; }
+                else if (c === '"') q = false;
+                else cur += c;
+            } else if (c === '"') q = true;
+            else if (c === ',') { row.push(cur); cur = ''; }
+            else if (c === '\n' || c === '\r') {
+                if (c === '\r' && text[i + 1] === '\n') i++;
+                row.push(cur); rows.push(row); row = []; cur = '';
+            } else cur += c;
+        }
+        if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+        return rows;
+    }
+
+    // 결과: { sets: {...}, error: '' }
+    async function loadKujiSheet() {
+        if (!KUJI_SHEET_CSV_URL) return { sets: {}, error: '' };
+        try {
+            const url = KUJI_SHEET_CSV_URL + (KUJI_SHEET_CSV_URL.includes('?') ? '&' : '?') + '_=' + Date.now();
+            const res = await fetch(url, { cache: 'no-store' });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const sets = {};
+            parseCsv(await res.text()).forEach(r => {
+                const jan = String(r[0] || '').replace(/\s/g, '');
+                const grade = String(r[1] || '').replace(/[-\s]/g, '');
+                const per = parseInt(String(r[2] || '').replace(/[^\d]/g, ''), 10);
+                if (/^\d{8,14}$/.test(jan) && /^\d+$/.test(grade) && per > 0) {
+                    sets[jan] = { grade: grade, perSet: per };
+                }
+            });
+            return { sets: sets, error: '' };
+        } catch (e) {
+            console.error('[쿠지 세트시트] 읽기 실패', e);
+            return { sets: {}, error: String(e.message || e) };
+        }
+    }
 
     function injectCustomButton() {
         if (document.getElementById('custom-picking-btn')) return;
@@ -352,7 +421,8 @@
                 return a.pageNum - b.pageNum;
             });
 
-            openPrintWindow(collectedGroups);
+            const kujiSheet = await loadKujiSheet();
+            openPrintWindow(collectedGroups, kujiSheet);
         }
         document.getElementById('harvest-overlay')?.remove();
     }
@@ -367,10 +437,14 @@
         overlay.innerText = msg;
     }
 
-    function openPrintWindow(groups) {
+    function openPrintWindow(groups, kujiSheet) {
         const printWin = window.open('', '_blank');
         if(!printWin) return;
-        const safeData = JSON.stringify(groups).replace(/[\u007F-\uFFFF]/g, chr => "\\u" + ("0000" + chr.charCodeAt(0).toString(16)).substr(-4));
+        kujiSheet = kujiSheet || { sets: {}, error: '' };
+        const toSafe = (obj) => JSON.stringify(obj).replace(/[\u007F-￿]/g, chr => "\\u" + ("0000" + chr.charCodeAt(0).toString(16)).substr(-4));
+        const safeData = toSafe(groups);
+        const safeKuji = toSafe(Object.assign({}, KUJI_SETS, kujiSheet.sets));
+        const safeSheetInfo = toSafe({ editUrl: KUJI_SHEET_EDIT_URL, error: kujiSheet.error });
 
         const style = `<style>
             @page { size: A4; margin: 0; }
@@ -382,6 +456,9 @@
             .content-wrapper { position: relative; z-index: 1; }
             table { background-color: transparent !important; }
             tr { page-break-inside: avoid; }
+            .kuji-banner { border:3px solid #d00; background:#fff4f4; padding:6px 10px; margin:0 0 8px 0; font-weight:900; font-size:15px; color:#000; display:flex; align-items:center; gap:10px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            .kuji-banner.warn { border-color:#e69500; background:#fff8e6; }
+            .kuji-reg { padding:3px 10px; background:#e69500; color:white; border:none; border-radius:4px; font-weight:bold; cursor:pointer; }
         </style>`;
 
         printWin.document.write(`<html><head>${style}<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script></head><body>
@@ -389,12 +466,118 @@
             <div id="content-area"></div>
             <script>
                 const groups = ${safeData};
+                const KUJI_SETS_BASE = ${safeKuji};
+                const KUJI_LOCAL_KEY = 'kujiSetsLocal';
+                const KUJI_SHEET_INFO = ${safeSheetInfo};
+                if (KUJI_SHEET_INFO.error) {
+                    document.body.insertAdjacentHTML('afterbegin', '<div class="no-print" style="position:fixed; top:10px; left:10px; z-index:1000; background:#e69500; color:#fff; padding:6px 12px; border-radius:4px; font-weight:bold;">⚠ 쿠지 세트 시트를 읽지 못했습니다 (' + KUJI_SHEET_INFO.error + ') - 코드에 등록된 기준만 사용 중</div>');
+                }
+
+                /* ---------- [v1.1.0] 아타리쿠지 세트수 계산 ---------- */
+                function loadKujiSets() {
+                    let local = {};
+                    try { local = JSON.parse(localStorage.getItem(KUJI_LOCAL_KEY) || '{}') || {}; } catch (e) {}
+                    return Object.assign({}, local, KUJI_SETS_BASE);
+                }
+
+                // 출고번호별로: 메인잔코드(S숫자)가 없는 쿠지 서브 잔코드 묶음 → 세트수 계산
+                function computeKujiInfo(allGroups) {
+                    const sets = loadKujiSets();
+                    const byOut = {};
+                    allGroups.forEach(g => {
+                        const o = byOut[g.outNum] = byOut[g.outNum] || { mains: new Set(), subs: {} };
+                        g.items.forEach(it => {
+                            if (!it.productName.toUpperCase().includes("KUJI")) return;
+                            if (/S\\d+/i.test(it.janCode)) {
+                                o.mains.add(it.janCode.split(/S/i)[0].replace(/[- ]+$/, "").trim());
+                                return;
+                            }
+                            const m = it.janCode.trim().match(/^(\\d{8,14})-(\\d+)$/);
+                            if (!m) return;
+                            const s = o.subs[m[1]] = o.subs[m[1]] || { name: it.productName, grades: {} };
+                            s.grades[m[2]] = (s.grades[m[2]] || 0) + it.qty;
+                        });
+                    });
+                    const result = {};
+                    Object.keys(byOut).forEach(out => {
+                        const o = byOut[out];
+                        const map = {};
+                        Object.keys(o.subs).forEach(base => {
+                            if (o.mains.has(base)) return; // 메인 잔코드가 있으면 기존 (○set) 표시 사용
+                            const s = o.subs[base];
+                            const conf = sets[base];
+                            const info = { base: base, name: s.name, grades: Object.keys(s.grades), conf: conf };
+                            if (!conf) {
+                                info.status = 'unregistered';
+                            } else if (!s.grades[String(conf.grade)]) {
+                                info.status = 'noref';
+                            } else {
+                                info.refQty = s.grades[String(conf.grade)];
+                                info.sets = info.refQty / conf.perSet;
+                                info.status = Number.isInteger(info.sets) ? 'ok' : 'odd';
+                            }
+                            map[base] = info;
+                        });
+                        result[out] = map;
+                    });
+                    return result;
+                }
+
+                function fmtSets(n) { return Number.isInteger(n) ? String(n) : n.toFixed(1); }
+
+                function kujiBannerHtml(map) {
+                    if (!map) return '';
+                    return Object.keys(map).map(base => {
+                        const k = map[base];
+                        let cls = 'kuji-banner warn';
+                        let body = '';
+                        if (k.status === 'ok') {
+                            cls = 'kuji-banner';
+                            body = '<span style="font-size:22px; color:#d00;">' + k.sets + '세트</span>' +
+                                   '<span style="font-size:12px; font-weight:normal; color:#444;">(-' + k.conf.grade + ' 기준 ' + k.conf.perSet + '개 = 1세트)</span>';
+                        } else if (k.status === 'odd') {
+                            body = '<span style="font-size:20px; color:#d00;">' + fmtSets(k.sets) + '세트 ⚠ 수량 확인</span>' +
+                                   '<span style="font-size:12px; font-weight:normal; color:#444;">(-' + k.conf.grade + ' 현재 ' + k.refQty + '개 / 1세트 ' + k.conf.perSet + '개)</span>';
+                        } else if (k.status === 'noref') {
+                            body = '<span>기준등급 -' + k.conf.grade + ' 이(가) 목록에 없음 → 세트수 확인 필요</span>';
+                        } else {
+                            body = '<span>세트 기준 미등록</span>' +
+                                   (KUJI_SHEET_INFO.editUrl ? '<a class="no-print kuji-reg" style="text-decoration:none;" target="_blank" href="' + KUJI_SHEET_INFO.editUrl + '">📋 시트에 등록하기</a>' : '') +
+                                   '<button class="no-print kuji-reg kuji-local" style="background:#6b7280;" data-base="' + base + '" data-grades="' + k.grades.join(',') + '">이 PC에 임시 등록</button>';
+                        }
+                        return '<div class="' + cls + '"><span>🎯 ' + k.name + ' (' + base + ') :</span>' + body + '</div>';
+                    }).join('');
+                }
+
+                document.addEventListener('click', function(e) {
+                    const btn = e.target.closest ? e.target.closest('.kuji-local') : null;
+                    if (!btn) return;
+                    const base = btn.getAttribute('data-base');
+                    const grades = btn.getAttribute('data-grades').split(',').map(g => '-' + g).join(', ');
+                    let grade = prompt('[' + base + '] 기준이 될 등급 번호를 입력하세요\\n(목록에 있는 등급: ' + grades + ')', '1');
+                    if (!grade) return;
+                    grade = grade.replace(/-/g, '').trim();
+                    const per = parseInt(prompt('-' + grade + ' 등급은 1세트에 몇 개입니까?', '2'), 10);
+                    if (!per || per < 1) return;
+                    try {
+                        const local = JSON.parse(localStorage.getItem(KUJI_LOCAL_KEY) || '{}') || {};
+                        local[base] = { grade: grade, perSet: per };
+                        localStorage.setItem(KUJI_LOCAL_KEY, JSON.stringify(local));
+                    } catch (err) { alert('저장 실패: ' + err); return; }
+                    renderAll();
+                });
+                /* ---------- [v1.1.0] 끝 ---------- */
+
+                function renderAll() {
+                const gs = JSON.parse(JSON.stringify(groups));
+                const kujiInfo = computeKujiInfo(gs);
                 let html = "";
 
-                groups.forEach((g, idx) => {
+                gs.forEach((g, idx) => {
                     let rows = "";
                     let currentMainNo = 0;
                     let currentSubNo = 0;
+                    const kujiMap = kujiInfo[g.outNum] || {};
 
                     let existingMainJancodes = new Set();
                     g.items.forEach(it => {
@@ -457,6 +640,14 @@
                                 nameTdStyle = 'style="border:1.5px solid #000; padding:2px 6px; font-size:13px; font-weight:500; color:#555; text-align:center; word-break:break-all; line-height:1.2;"';
                                 janTdStyle = 'style="border:1.5px solid #000; text-align:center; font-size:15px; font-weight:500; color:#555; letter-spacing:-1px; word-break:break-all; padding:0 4px;"';
                                 it.productName = '<div style="display:flex; align-items:center; width:100%;"><span style="font-weight:bold; color:#ff3e1d; margin-right:5px; padding-left:5px;">└</span><span style="flex:1; text-align:center; padding-right:15px;">' + it.productName + '</span></div>';
+                            } else {
+                                // [v1.1.0] 메인 잔코드가 없는 쿠지: 기준등급 행 수량칸에 (○set) 표시
+                                const sm = it.janCode.trim().match(/^(\\d{8,14})-(\\d+)$/);
+                                const k = sm ? kujiMap[sm[1]] : null;
+                                if (k && (k.status === 'ok' || k.status === 'odd') && String(k.conf.grade) === sm[2]) {
+                                    rowStyle = 'style="height:45px; background-color: #fff9c4 !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;"';
+                                    qtyTdHtml = '<td style="border:1.5px solid #000; text-align:center; vertical-align:middle; padding:2px 0;"><div style="font-size:26px; color:red; font-weight:900; line-height:1;">' + it.qty + '</div><div style="font-size:11px; color:#ff3e1d; font-weight:bold; margin-top:1px;">(' + fmtSets(k.sets) + 'set)</div></td>';
+                                }
                             }
                         }
 
@@ -508,6 +699,7 @@
                                         '<div style="color:#ff0000; font-weight:900; font-size:12px; max-width:70%;">' + (g.pageNum===1?reqString:"") + '</div>' +
                                         '<div style="font-size:22px; font-weight:900; color:#000;">'+g.outNum+'</div>' +
                                     '</div>' +
+                                    kujiBannerHtml(kujiMap) +
                                     '<table style="width:100%; border-collapse:collapse; table-layout:fixed; border:2px solid #000;">' +
                                         '<thead style="background:#e8e8e8; font-size:13px; font-weight:bold;">' +
                                             '<tr style="height:35px;">' +
@@ -520,7 +712,10 @@
                             '</div>';
                 });
                 document.getElementById('content-area').innerHTML = html;
-                groups.forEach((g, i) => { if(g.pageNum === 1) new QRCode(document.getElementById("qr-" + i), {text: g.outNum, width: 80, height: 80}); });
+                gs.forEach((g, i) => { if(g.pageNum === 1 && typeof QRCode !== 'undefined') new QRCode(document.getElementById("qr-" + i), {text: g.outNum, width: 80, height: 80}); });
+                }
+
+                renderAll();
             </script>
         </body></html>`);
         printWin.document.close();
@@ -528,4 +723,3 @@
 
     setInterval(injectCustomButton, 500);
 })();
-
