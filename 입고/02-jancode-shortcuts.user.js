@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] JAN코드 화면 단축키 통합 (JAN이동 + Enter이동 + F1/F2/F3 + 합계패널)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.2.1
+// @version      1.3.0
 // @description  jancode 페이지 통합본. 원본: A-1-9(JAN 검색이동) + A-1-6(Enter 행이동) + A-1-7(F3) + A-1-8(F1) + A-1-10(F2)
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/store/jancode*
@@ -29,6 +29,18 @@
  *   (창이 안 움직이는 경우)에는 스크립트가 대신 창을 스크롤합니다.
  *   사이트가 막지 않은 경우는 원래대로 브라우저가 스크롤하므로 두 번 움직이지 않습니다.
  * - 입고 창이 화면보다 길면 창에 스크롤바를 강제로 켜는 처리를 휠을 굴릴 때도 바로 적용.
+ *
+ * [v1.3.0 변경 사항] 입고 창 스크롤이 또 안 내려간다는 보고 (3번째)
+ * - 원인: 지금까지는 "사이트가 휠을 막았는지"를 확인한 뒤에만 대신 스크롤했는데,
+ *   사이트가 바뀔 때마다 막는 방식이 달라져서 확인에 걸리지 않는 경우가 생겼습니다.
+ *   또 입고 창의 높이가 내용 길이만큼 늘어나 버리면(화면 밖으로 넘침) 창 자체에
+ *   스크롤할 공간이 없어 스크롤바를 켜도 움직이지 않았습니다.
+ * - 수정: 입고 창 안에서는 이제 "확인하지 않고 항상" 스크립트가 직접 스크롤합니다.
+ *   1) 입고 창을 화면 높이에 고정 + 세로 스크롤바 강제 (내용이 넘치면 항상 스크롤 가능)
+ *   2) 휠을 굴리면 브라우저 기본 동작은 끄고, 커서 아래에서 실제로 스크롤 가능한 칸
+ *      (드롭다운 목록 등)부터 찾아서 그 칸을, 없으면 입고 창 전체를 스크롤
+ *   3) 숫자 칸 위에서 휠을 굴려도 수량 값은 바뀌지 않음 (기본 동작을 끄므로)
+ *   4) [맨 아래 (F4)] / [맨 위] 버튼도 같은 방식으로 동작
  */
 
 (function() {
@@ -47,6 +59,24 @@
             const title = (m.querySelector('.modal-title, h5, h4')?.textContent || '').replace(/\s+/g, '').toUpperCase();
             return title.includes('JAN') && (title.includes('입고') || title.includes('入庫'));
         }) || null;
+    }
+
+    /* [v1.3.0] 입고 창을 화면 높이에 고정하고 세로 스크롤을 강제로 켭니다.
+     * (창이 내용 길이만큼 늘어나 화면 밖으로 넘치면 스크롤할 공간이 없어지기 때문) */
+    function forceModalScroll(modal) {
+        if (!modal) return;
+        const cs = getComputedStyle(modal);
+        if (cs.position === 'fixed' || cs.position === 'absolute') {
+            modal.style.setProperty('top', '0', 'important');
+            modal.style.setProperty('bottom', '0', 'important');
+            modal.style.setProperty('height', '100vh', 'important');
+            modal.style.setProperty('max-height', '100vh', 'important');
+        }
+        modal.style.setProperty('overflow-y', 'auto', 'important');
+        // 창 안쪽 칸들이 높이를 막아 둔 경우(overflow: hidden) 풀어 줌
+        modal.querySelectorAll('.modal-dialog, .modal-content').forEach(el => {
+            if (getComputedStyle(el).overflowY === 'hidden') el.style.setProperty('overflow', 'visible', 'important');
+        });
     }
 
     /* [블록 1] A-1-9 — Enter: JAN 스캔 후 해당 행 수량 칸으로 커서 이동 */
@@ -254,13 +284,7 @@
             if (isScrollable(root) && !boxes.includes(root)) boxes.push(root);
             return boxes;
         }
-        function ensureScrollable(modal) {
-            const content = modal.querySelector('.modal-dialog') || modal.firstElementChild;
-            if (content && content.getBoundingClientRect().height > window.innerHeight &&
-                getComputedStyle(modal).overflowY !== 'auto' && getComputedStyle(modal).overflowY !== 'scroll') {
-                modal.style.setProperty('overflow-y', 'auto', 'important');
-            }
-        }
+        function ensureScrollable(modal) { forceModalScroll(modal); }
         function lastVisibleEl(modal) {
             const content = modal.querySelector('.modal-content') || modal;
             let el = content.lastElementChild;
@@ -269,12 +293,14 @@
         }
         function goBottom(modal) {
             ensureScrollable(modal);
+            modal.scrollTop = modal.scrollHeight;
             scrollBoxes(modal).forEach(el => { el.scrollTop = el.scrollHeight; });
             const last = lastVisibleEl(modal);
             if (last) last.scrollIntoView({ block: 'end' });
             lastDir = 'bottom';
         }
         function goTop(modal) {
+            modal.scrollTop = 0;
             scrollBoxes(modal).forEach(el => { el.scrollTop = 0; });
             const head = modal.querySelector('.modal-header, .modal-title') || modal.querySelector('.modal-content');
             if (head) head.scrollIntoView({ block: 'start' });
@@ -329,33 +355,47 @@
         }, 400);
     })();
 
-    /* [블록 7] v1.2.1 — 입고 창 안에서 휠이 막히면 스크립트가 대신 스크롤
-     * 사이트 코드가 휠 동작을 막으면(preventDefault) 창이 안 내려감.
-     * 휠 이벤트 처리가 모두 끝난 뒤에 "막혔는지"를 확인해서, 막혔을 때만 대신 스크롤합니다.
-     * (숫자 칸의 값이 휠로 바뀌는 건 사이트가 계속 막아 줌) */
-    (function modalWheelFallbackBlock() {
-        const pickBox = (modal) => {
-            const content = modal.querySelector('.modal-dialog') || modal.firstElementChild;
-            if (content && content.getBoundingClientRect().height > window.innerHeight &&
-                getComputedStyle(modal).overflowY !== 'auto' && getComputedStyle(modal).overflowY !== 'scroll') {
-                modal.style.setProperty('overflow-y', 'auto', 'important');
-            }
-            const boxes = window.__tmJanScrollBoxes ? window.__tmJanScrollBoxes(modal) : [];
-            return boxes.includes(modal) ? modal : (boxes[0] || document.scrollingElement);
+    /* [블록 7] v1.3.0 — 입고 창 안의 휠 스크롤을 스크립트가 항상 직접 처리
+     * 사이트가 휠을 막든 안 막든 상관없이: 기본 동작을 끄고 → 커서 아래에서 실제로
+     * 스크롤 가능한 칸(드롭다운 목록 등)을 찾아 그 칸을, 없으면 입고 창 전체를 움직입니다.
+     * 기본 동작을 끄므로 숫자 칸 위에서 휠을 굴려도 수량이 바뀌지 않습니다. */
+    (function modalWheelBlock() {
+        const canScroll = (el, dy) => {
+            if (!el || el.scrollHeight <= el.clientHeight + 2) return false;
+            const oy = getComputedStyle(el).overflowY;
+            if (oy !== 'auto' && oy !== 'scroll' && oy !== 'overlay') return false;
+            // 이미 끝까지 내려간(올라간) 칸은 건너뛰고 바깥 칸을 움직임
+            if (dy > 0) return el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+            if (dy < 0) return el.scrollTop > 0;
+            return true;
         };
+        let logged = false;
         window.addEventListener('wheel', function(e) {
+            if (e.ctrlKey) return; // Ctrl+휠(화면 확대/축소)은 그대로 둠
             const t = e.target;
             if (!(t instanceof Element)) return;
-            const modal = t.closest('.modal');
-            if (!modal || modal !== findStoreModal()) return;
+            const modal = findStoreModal();
+            if (!modal || !modal.contains(t)) return;
+
+            forceModalScroll(modal);
             const dy = e.deltaMode === 1 ? e.deltaY * 40 : (e.deltaMode === 2 ? e.deltaY * window.innerHeight : e.deltaY);
-            // 이벤트 처리가 전부 끝난 뒤에 확인 (사이트 코드가 막았는지)
-            setTimeout(() => {
-                if (!e.defaultPrevented) return; // 막히지 않았으면 브라우저가 정상 스크롤함
-                const box = pickBox(modal);
-                if (box) box.scrollTop += dy;
-            }, 0);
-        }, { capture: true, passive: true });
+            if (!dy) return;
+
+            let box = null;
+            for (let el = t; el && el !== modal; el = el.parentElement) {
+                if (canScroll(el, dy)) { box = el; break; }
+            }
+            if (!box) box = modal;
+
+            e.preventDefault();
+            box.scrollTop += dy;
+
+            if (!logged) {
+                logged = true;
+                console.log('[입고 스크롤 v1.3.0] 스크립트가 직접 스크롤:', box.id || box.className || box.tagName,
+                    'scrollHeight', box.scrollHeight, 'clientHeight', box.clientHeight);
+            }
+        }, { capture: true, passive: false });
     })();
 
 })();
