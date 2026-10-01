@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.7.0
+// @version      1.8.0
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -183,6 +183,18 @@
  *  - [블록 2] 같은 JAN이 2개 이상 목록에 있으면 JAN 칸에 그룹 색 테두리 +
  *    "🔗 같은 JAN n목록" 배지를 붙이고, 그룹 위/아래에 같은 색 선을 그어 한 묶음으로 보이게 합니다.
  *    (트래킹이 달라서 붙일 수 없는 경우에도 색·배지는 똑같이 표시)
+ *
+ *  v1.8.0 추가 기능 (요청: 과다 스캔 방지 + 무게 이상치 경고)
+ *  - [블록 2] 기준값은 블록 2 맨 위 TM_CONFIG 한 곳에 모아 두었습니다. 숫자만 바꾸면 됩니다.
+ *  - [블록 2] 과다 스캔 방지: 같은 JAN의 모든 목록이 필요 수량을 다 채운 뒤 또 스캔하면
+ *    수량에 넣지 않고, 화면 전체 빨간 경고 + 경고음 + "이미 3/3개 완료" 문구를 띄웁니다.
+ *    이 출고건에 없는 JAN도 같은 화면("이 출고건에 없는 상품")으로 막습니다.
+ *  - [블록 2] F4 = 마지막 스캔 1건 취소. 스캔 수가 1 줄고, 0이 되면 그 스캔으로 체크된
+ *    체크박스도 해제됩니다. 여러 번 누르면 최근 스캔부터 차례로 취소됩니다.
+ *  - [블록 2] 무게 이상치 경고: 포장완료(Enter 또는 버튼 클릭) 직전에 검사해서
+ *    ① 비어 있음/0  ② 30kg 초과  ③ 박스 1개당 0.1kg 미만 또는 25kg 초과(박스 수 = box_cnt1~5 합계)
+ *    이면 확인창을 띄웁니다. Enter/Esc = 다시 입력, Y 또는 버튼 클릭 = 그대로 진행.
+ *    (Enter 연타로 실수로 통과되지 않도록 Enter는 "다시 입력"에 묶었습니다)
  *
  *  v1.6.2 버그 수정 (요청: "회원 선택칸에 업체번호를 치면 아래 검색칸에도 같이 입력된다")
  *  - [블록 1] 고속 스캔 기능이 화면 전체의 키 입력을 모으고 있어서, 회원 선택 드롭다운
@@ -467,6 +479,25 @@
     let refreshScheduled = false;
     let observerMuteUntil = 0;
 
+    // ================================================================
+    // [v1.8.0] ★ 기준값 설정 — 현장에 맞게 여기 숫자만 바꾸면 됩니다 ★
+    // ================================================================
+    const TM_CONFIG = {
+        // --- 과다 스캔 방지 ---
+        UNDO_KEY: 'F4',              // 마지막 스캔 1건 취소 키
+        BLOCK_MESSAGE_MS: 1500,      // 빨간 경고 화면이 떠 있는 시간(밀리초)
+
+        // --- 무게 이상치 경고 (단위: kg) ---
+        WEIGHT_MAX_KG: 30,           // 이 값을 넘으면 경고 (예: 1200g을 1200으로 입력한 실수)
+        WEIGHT_PER_BOX_MIN_KG: 0.1,  // 박스 1개당 이 값보다 가벼우면 경고
+        WEIGHT_PER_BOX_MAX_KG: 25,   // 박스 1개당 이 값보다 무거우면 경고
+    };
+
+    // [v1.8.0] 스캔 취소용 기록 (최근 스캔이 맨 뒤)
+    const scanHistory = [];
+    // [v1.8.0] 무게 경고에서 "그대로 진행"을 누른 직후 1회만 통과시키는 표시
+    let weightBypassOnce = false;
+
     // [v1.5.4 추가] 트래킹번호는 고객이 출고요청 시 직접 입력하는 값이라, 같은 배송건인데도
     // 띄어쓰기/하이픈/대소문자가 미세하게 다르게 입력되어 서로 "다른 트래킹"으로 인식되는
     // 경우가 있었습니다. 비교(병합/색상 구분) 전에 공백·하이픈을 제거하고 대문자로
@@ -573,6 +604,67 @@
             overlay.style.opacity = '0';
             if (xMark) xMark.style.transform = 'scale(0.8)';
         }, 800);
+    };
+
+    /**
+     * [v1.8.0] 스캔 차단 시 화면 전체 빨간 경고 + 큰 글씨 메시지
+     *  (기존 X 표시보다 진하게, 메시지를 읽을 수 있도록 조금 더 오래 표시)
+     */
+    let blockOverlayTimer = null;
+    const showScanBlocked = (title, detail) => {
+        let overlay = document.getElementById('tm-scan-block-overlay');
+        if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.id = 'tm-scan-block-overlay';
+            overlay.style.cssText = `
+                position: fixed !important; inset: 0 !important;
+                background: rgba(198, 40, 40, 0.88) !important;
+                display: flex !important; flex-direction: column !important;
+                justify-content: center !important; align-items: center !important;
+                z-index: 999999 !important; pointer-events: none !important;
+                transition: opacity 0.15s ease-in-out !important; opacity: 0;
+                color: #fff !important; text-align: center !important;
+                font-family: sans-serif !important;
+            `;
+            overlay.innerHTML = `
+                <div style="font-size:150px;font-weight:900;line-height:1;">✕</div>
+                <div class="tm-block-title" style="font-size:56px;font-weight:900;margin-top:16px;"></div>
+                <div class="tm-block-detail" style="font-size:26px;font-weight:700;margin-top:12px;opacity:.95;"></div>
+                <div style="font-size:18px;margin-top:24px;opacity:.85;">수량에 넣지 않았습니다 · 잘못 막혔다면 [${TM_CONFIG.UNDO_KEY}] = 마지막 스캔 취소</div>
+            `;
+            document.body.appendChild(overlay);
+        }
+        overlay.querySelector('.tm-block-title').textContent = title;
+        overlay.querySelector('.tm-block-detail').textContent = detail || '';
+        overlay.style.opacity = '1';
+        clearTimeout(blockOverlayTimer);
+        blockOverlayTimer = setTimeout(() => { overlay.style.opacity = '0'; }, TM_CONFIG.BLOCK_MESSAGE_MS);
+    };
+
+    /**
+     * [v1.8.0] 화면 상단 짧은 안내(초록/회색 토스트) — 스캔 취소 결과 안내용
+     */
+    let toastTimer = null;
+    const showToast = (text, color = '#37474f') => {
+        let t = document.getElementById('tm-toast');
+        if (!t) {
+            t = document.createElement('div');
+            t.id = 'tm-toast';
+            t.style.cssText = `
+                position: fixed !important; top: 20px !important; left: 50% !important;
+                transform: translateX(-50%) !important; z-index: 1000000 !important;
+                padding: 12px 24px !important; border-radius: 8px !important;
+                color: #fff !important; font-size: 18px !important; font-weight: 700 !important;
+                box-shadow: 0 4px 16px rgba(0,0,0,.3) !important; pointer-events: none !important;
+                transition: opacity .2s !important; opacity: 0;
+            `;
+            document.body.appendChild(t);
+        }
+        t.style.setProperty('background', color, 'important');
+        t.textContent = text;
+        t.style.opacity = '1';
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => { t.style.opacity = '0'; }, 1800);
     };
 
     /**
@@ -1016,9 +1108,24 @@
                 }
             }
 
-            if (e.key === 'Enter' && active.id === 'weight' && active.value) {
+            // [v1.8.0] 마지막 스캔 1건 취소 (포장 모달이 있을 때만)
+            if (e.key === TM_CONFIG.UNDO_KEY && document.getElementById('packingItemsTbody')) {
+                e.preventDefault();
+                e.stopPropagation();
+                undoLastScan();
+                return;
+            }
+
+            if (e.key === 'Enter' && active.id === 'weight') {
                 const btn = document.getElementById('btnSavePacking');
-                if (btn && !btn.disabled) { isPackingComplete = true; btn.click(); }
+                // [v1.8.0] 무게 이상치면 사이트 기본 Enter 동작도 막고 확인창만 띄움
+                if (btn && !btn.disabled && checkWeightProblems().length > 0) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    btn.click(); // → initWeightGuard가 가로채서 확인창 표시
+                    return;
+                }
+                if (active.value && btn && !btn.disabled) { isPackingComplete = true; btn.click(); }
             }
         }, true);
 
@@ -1077,17 +1184,28 @@
             const rowJan = row.getAttribute('data-jancode') || row.cells[5]?.innerText.trim();
             return rowJan && String(rowJan) === String(jancode);
         });
+        // [v1.8.0] 과다 스캔 방지: 이 JAN의 모든 목록이 필요 수량을 다 채웠으면
+        // targetRow를 정하지 않고(=수량에 안 넣음) 아래에서 차단 처리합니다.
+        // (주문 수량을 알 수 없는 목록(q<=0)이 하나라도 있으면 기존처럼 통과)
+        let blockReason = null;
         if (matchedRows.length > 0) {
             targetRow = matchedRows.find(row => {
                 const q = getRowOrderQty(row);
                 return q <= 0 || getRowScanCount(row) < q;
-            }) || matchedRows[matchedRows.length - 1];
+            }) || null;
+            if (!targetRow) {
+                const need = matchedRows.reduce((s, r) => s + getRowOrderQty(r), 0);
+                const done = matchedRows.reduce((s, r) => s + getRowScanCount(r), 0);
+                blockReason = { title: `이미 ${done}/${need}개 완료`, detail: `JAN ${jancode} — 필요 수량을 이미 다 채웠습니다` };
+            }
+        } else {
+            blockReason = { title: '이 출고건에 없는 상품', detail: `JAN ${jancode} — 이 출고건 목록에 없습니다` };
         }
 
-        // 1. 一致するJANコードがない場合：警告音＋画面中央大型X表示＋入力欄赤強調
+        // 1. 一致するJANコードがない場合 / [v1.8.0] 필요 수량 초과：警告音＋赤画面＋入力欄赤強調
         if (!targetRow) {
             playWarningSound();
-            showLargeErrorX();
+            showScanBlocked(blockReason.title, blockReason.detail);
 
             const janInput = document.getElementById('search_jancode');
             if (janInput) {
@@ -1109,6 +1227,9 @@
         tbody.prepend(targetRow);
 
         const checkbox = targetRow.querySelector('input.sub_checkbox');
+        // [v1.8.0] 취소(F4)할 때 되돌릴 수 있도록 이번 스캔을 기록
+        scanHistory.push({ row: targetRow, jancode: String(jancode), checkedByScan: !!(checkbox && !checkbox.checked) });
+        if (scanHistory.length > 200) scanHistory.shift();
         if (checkbox && !checkbox.checked) {
             checkbox.checked = true;
             checkbox.dispatchEvent(new Event('change', { bubbles: true }));
@@ -1162,24 +1283,26 @@
                 qtyCell.appendChild(badge);
             }
 
-            let currentCount = parseInt(badge.getAttribute('data-count') || '0', 10) + 1;
-            badge.setAttribute('data-count', currentCount);
-            badge.innerText = `スキャン: ${currentCount}`;
-            badge.classList.remove('tm-scan-done');
+            const currentCount = parseInt(badge.getAttribute('data-count') || '0', 10) + 1;
+            renderScanBadge(badge, currentCount, getRowOrderQty(targetRow));
+            if (getRowOrderQty(targetRow) > 0 && currentCount > getRowOrderQty(targetRow)) playWarningSound();
+        }
 
-            // [추가 기능] 과스캔 방지 - 스캔 횟수가 원래 주문 수량을 넘으면 경고
-            const orderQty = (() => {
-                const attr = qtyCell.getAttribute('data-quantity');
-                if (attr !== null && attr !== '') {
-                    const n = parseInt(attr, 10);
-                    if (!isNaN(n)) return n;
-                }
-                const clone = qtyCell.cloneNode(true);
-                const b = clone.querySelector('.scan-counter-badge');
-                if (b) b.remove();
-                return parseInt(clone.innerText.replace(/[^0-9]/g, '') || '0', 10);
-            })();
+        const janInput = document.getElementById('search_jancode');
+        if (janInput) { janInput.value = ''; }
 
+        scheduleRefreshTableStyle(50);
+    };
+
+    /**
+     * [v1.8.0] 스캔 배지 그리기 (스캔/취소 공용)
+     *  진행 중 = 주황, 완료 = 초록, 초과 = 빨강
+     */
+    const renderScanBadge = (badge, currentCount, orderQty) => {
+        badge.setAttribute('data-count', currentCount);
+        badge.innerText = `スキャン: ${currentCount}`;
+        badge.classList.remove('tm-scan-done');
+        {
             if (orderQty > 0 && currentCount > orderQty) {
                 badge.style.setProperty('background-color', '#b71c1c', 'important');
                 badge.style.setProperty('color', '#ffffff', 'important');
@@ -1208,11 +1331,177 @@
                 }
             }
         }
+    };
+
+    /**
+     * [v1.8.0] 마지막 스캔 1건 취소 (TM_CONFIG.UNDO_KEY, 기본 F4)
+     *  - 스캔 수 1 감소. 0이 되면 배지 제거, 그 스캔으로 체크된 체크박스도 해제.
+     *  - 다른 출고건을 열었으면(이전 행이 화면에 없으면) 그 기록은 건너뜀.
+     */
+    const undoLastScan = () => {
+        const tbody = document.getElementById('packingItemsTbody');
+        if (!tbody) return;
+
+        let entry = null;
+        while (scanHistory.length > 0) {
+            const e = scanHistory.pop();
+            if (e.row && tbody.contains(e.row)) { entry = e; break; }
+        }
+        if (!entry) {
+            showToast('취소할 스캔이 없습니다', '#616161');
+            return;
+        }
+
+        const row = entry.row;
+        const qtyCell = getRowQtyCell(row);
+        const badge = qtyCell && qtyCell.querySelector('.scan-counter-badge');
+        const newCount = Math.max(0, getRowScanCount(row) - 1);
+
+        if (badge) {
+            if (newCount === 0) {
+                badge.remove();
+            } else {
+                renderScanBadge(badge, newCount, getRowOrderQty(row));
+            }
+        }
+
+        if (newCount === 0 && entry.checkedByScan) {
+            const cb = row.querySelector('input.sub_checkbox');
+            if (cb && cb.checked) {
+                cb.checked = false;
+                cb.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        }
+
+        row.classList.remove('latest-scanned-row');
+        showToast(`↩ 스캔 취소: JAN ${entry.jancode} (현재 ${newCount}/${getRowOrderQty(row) || '?'})`, '#1565c0');
 
         const janInput = document.getElementById('search_jancode');
-        if (janInput) { janInput.value = ''; }
+        if (janInput) { janInput.value = ''; janInput.focus(); }
 
         scheduleRefreshTableStyle(50);
+    };
+
+    /**
+     * [v1.8.0] 무게 이상치 검사 → 문제가 있으면 메시지 배열, 없으면 빈 배열
+     */
+    const getBoxCountTotal = () => {
+        let total = 0;
+        document.querySelectorAll('input[id^="box_cnt"]').forEach(inp => {
+            if (!/^box_cnt\d+$/.test(inp.id)) return;
+            const n = parseFloat(String(inp.value).replace(/[^0-9.]/g, ''));
+            if (!isNaN(n)) total += n;
+        });
+        return total;
+    };
+
+    const checkWeightProblems = () => {
+        const weightInput = document.getElementById('weight');
+        if (!weightInput) return [];
+        const raw = String(weightInput.value || '').trim();
+        const w = parseFloat(raw.replace(/[^0-9.]/g, ''));
+        const problems = [];
+
+        if (raw === '' || isNaN(w) || w <= 0) {
+            problems.push('무게가 비어 있거나 0입니다.');
+            return problems;
+        }
+        if (w > TM_CONFIG.WEIGHT_MAX_KG) {
+            problems.push(`무게 ${w}kg — ${TM_CONFIG.WEIGHT_MAX_KG}kg를 넘습니다. g로 입력하지 않았는지 확인하세요. (예: 1200g → 1.2)`);
+        }
+        const boxes = getBoxCountTotal();
+        if (boxes > 0) {
+            const perBox = w / boxes;
+            const perBoxText = Math.round(perBox * 100) / 100;
+            if (perBox < TM_CONFIG.WEIGHT_PER_BOX_MIN_KG) {
+                problems.push(`박스 ${boxes}개에 ${w}kg — 박스 1개당 ${perBoxText}kg로 너무 가볍습니다. (기준 ${TM_CONFIG.WEIGHT_PER_BOX_MIN_KG}kg 이상)`);
+            } else if (perBox > TM_CONFIG.WEIGHT_PER_BOX_MAX_KG) {
+                problems.push(`박스 ${boxes}개에 ${w}kg — 박스 1개당 ${perBoxText}kg로 너무 무겁습니다. (기준 ${TM_CONFIG.WEIGHT_PER_BOX_MAX_KG}kg 이하)`);
+            }
+        }
+        return problems;
+    };
+
+    /**
+     * [v1.8.0] 무게 확인창 (브라우저 기본 confirm 대신 직접 만든 창)
+     *  - 스캐너/키보드 Enter 연타로 실수로 "확인"되지 않도록 Enter = "다시 입력"
+     *  - 그대로 진행하려면 버튼 클릭 또는 Y 키
+     */
+    const showWeightConfirm = (problems, onProceed) => {
+        const old = document.getElementById('tm-weight-confirm');
+        if (old) old.remove();
+
+        const wrap = document.createElement('div');
+        wrap.id = 'tm-weight-confirm';
+        wrap.style.cssText = `
+            position: fixed; inset: 0; z-index: 1000001; background: rgba(0,0,0,.55);
+            display: flex; align-items: center; justify-content: center; font-family: sans-serif;
+        `;
+        const box = document.createElement('div');
+        box.style.cssText = `
+            background: #fff; border-radius: 12px; width: 520px; max-width: 92vw;
+            box-shadow: 0 10px 40px rgba(0,0,0,.4); overflow: hidden;
+        `;
+        box.innerHTML = `
+            <div style="background:#ef6c00;color:#fff;padding:16px 20px;font-size:22px;font-weight:800;">⚠ 무게를 확인해 주세요</div>
+            <div class="tm-wc-body" style="padding:18px 20px;font-size:17px;line-height:1.6;color:#333;"></div>
+            <div style="display:flex;gap:10px;padding:0 20px 20px;">
+                <button type="button" class="tm-wc-fix" style="flex:1;padding:12px;font-size:17px;font-weight:700;border:0;border-radius:8px;background:#1e88e5;color:#fff;cursor:pointer;">다시 입력 (Enter / Esc)</button>
+                <button type="button" class="tm-wc-go" style="flex:1;padding:12px;font-size:17px;font-weight:700;border:2px solid #ef6c00;border-radius:8px;background:#fff;color:#ef6c00;cursor:pointer;">그대로 진행 (Y)</button>
+            </div>
+        `;
+        const body = box.querySelector('.tm-wc-body');
+        problems.forEach(p => {
+            const d = document.createElement('div');
+            d.textContent = '• ' + p;
+            body.appendChild(d);
+        });
+        wrap.appendChild(box);
+        document.body.appendChild(wrap);
+
+        const close = () => {
+            wrap.remove();
+            window.removeEventListener('keydown', onKey, true);
+        };
+        const fix = () => {
+            close();
+            const wi = document.getElementById('weight');
+            if (wi) { wi.focus(); wi.select(); }
+        };
+        const go = () => { close(); onProceed(); };
+        const onKey = (e) => {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (e.key === 'Enter' || e.key === 'Escape') fix();
+            else if (e.key === 'y' || e.key === 'Y') go();
+        };
+        window.addEventListener('keydown', onKey, true);
+        box.querySelector('.tm-wc-fix').addEventListener('click', fix);
+        box.querySelector('.tm-wc-go').addEventListener('click', go);
+    };
+
+    /**
+     * [v1.8.0] 포장완료 버튼 클릭(마우스든 Enter든) 직전에 무게 검사
+     */
+    const initWeightGuard = () => {
+        window.addEventListener('click', (e) => {
+            const btn = e.target && e.target.closest && e.target.closest('#btnSavePacking');
+            if (!btn) return;
+            if (weightBypassOnce) { weightBypassOnce = false; return; }
+
+            const problems = checkWeightProblems();
+            if (problems.length === 0) return;
+
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            isPackingComplete = false;
+            playWarningSound();
+            showWeightConfirm(problems, () => {
+                weightBypassOnce = true;
+                isPackingComplete = true;
+                btn.click();
+            });
+        }, true);
     };
 
     /**
@@ -1392,6 +1681,7 @@
     const init = () => {
         setupAutoPrint();
         initKeyboardActions();
+        initWeightGuard();
         preventAutoReload();
 
         processInboundJanCodes();
