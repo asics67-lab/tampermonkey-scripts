@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         [입고] 입고데이터 보호 도구 (삭제 이중확인 + 삭제기록 + 사라진입고 탐지)
+// @name         [관리] 입고데이터 보호 도구 (삭제 이중확인 + 삭제기록 + 사라진입고 탐지)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.1.4
+// @version      1.1.5
 // @description  입고 처리 목록(일괄 삭제)과 Location관리(🗑) 화면에서 입고 데이터가 실수로 지워지는 것을 막고, 삭제 기록을 남기며, 기록 없이 사라진 입고 건을 찾아줍니다.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/store/trackingno*
@@ -17,7 +17,8 @@
 // @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/01-재고관리/inbound-guard.user.js
 // ==/UserScript==
 // [v1.1.4] 배포 위치 변경: 입고/03-inbound-guard.user.js → 관리/01-재고관리/inbound-guard.user.js (관리 담당자용 도구)
-//          @name은 일부러 그대로 둠 — 바꾸면 템퍼몽키가 다른 스크립트로 인식해서 삭제 기록이 안 이어지고 두 개가 동시에 돌게 됨
+// [v1.1.5] 이름 앞머리 [입고] → [관리]. 반드시 Raw 재설치가 아니라 템퍼몽키 "업데이트 확인"으로 받을 것
+//          (Raw로 설치하면 이름이 달라 새 스크립트로 하나 더 생김)
 
 /*
  * ============================================================
