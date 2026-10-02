@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.8.0
+// @version      1.8.1
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -977,10 +977,33 @@
         });
         const janGroupIdx = (r) => janFirstIndex.get(`${rowTrackingMap.get(r) || ''}|${rowJanMap.get(r) || ''}`) ?? origIndex.get(r);
 
+        // [v1.8.1] 같은 트래킹 안에서 같은 로케이션끼리 붙도록 정렬합니다.
+        // (예: 쿠지 -910 MIRROR 가 -78(다른 로케이션) 뒤에 와서 10-A,B 묶음에서 떨어지던 문제)
+        // 같은 JAN 묶음은 그대로 붙어 있도록, JAN 묶음의 첫 행 로케이션을 기준으로 삼습니다.
+        const locOf = (r) => {
+            const cell = r.cells[8];
+            if (!cell) return '';
+            return String(cell.innerText || cell.textContent || '').split('\n')[0].split(':')[0].trim().toUpperCase();
+        };
+        const janLeader = new Map();
+        survivorRows.forEach(r => {
+            const gk = `${rowTrackingMap.get(r) || ''}|${rowJanMap.get(r) || ''}`;
+            if (!janLeader.has(gk)) janLeader.set(gk, r);
+        });
+        const groupLoc = (r) => locOf(janLeader.get(`${rowTrackingMap.get(r) || ''}|${rowJanMap.get(r) || ''}`) || r);
+        const locFirstIndex = new Map();
+        survivorRows.forEach((r, idx) => {
+            const lk = `${rowTrackingMap.get(r) || ''}|${groupLoc(r)}`;
+            if (!locFirstIndex.has(lk)) locFirstIndex.set(lk, idx);
+        });
+        const locGroupIdx = (r) => locFirstIndex.get(`${rowTrackingMap.get(r) || ''}|${groupLoc(r)}`) ?? origIndex.get(r);
+
         const sortedSurvivors = survivorRows.slice().sort((a, b) => {
             const ta = trackingOrderIndex.get(rowTrackingMap.get(a) || '') ?? 0;
             const tb = trackingOrderIndex.get(rowTrackingMap.get(b) || '') ?? 0;
             if (ta !== tb) return ta - tb; // 트래킹 그룹 순서 우선
+            const la = locGroupIdx(a), lb = locGroupIdx(b);
+            if (la !== lb) return la - lb; // [v1.8.1] 같은 로케이션끼리 붙임
             const ja = janGroupIdx(a), jb = janGroupIdx(b);
             if (ja !== jb) return ja - jb; // 같은 JAN끼리 붙임
             return origIndex.get(a) - origIndex.get(b); // 나머지는 원래 순서
