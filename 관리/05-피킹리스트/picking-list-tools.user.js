@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.0
+// @version      1.3.1
 // @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
@@ -244,13 +244,37 @@
             const t = optionToText(it[k]);
             if (t && t !== '-' && t.toLowerCase() !== 'null') return t;
         }
-        // 마지막 수단: 상품명·이미지 등을 뺀 값 중 "숫자+PCS" 가 들어간 것
-        for (const k in it) {
-            if (/title|name|image|url|img/i.test(k)) continue;
-            const v = it[k];
-            if (typeof v === 'string' && /\d+\s*PCS/i.test(v)) return optionToText(v);
+        // [v1.3.1] 마지막 수단: 상품 데이터 전체(안쪽 묶음까지)에서 "숫자+PCS" 가 들어간 값 찾기
+        return findPcsText(it, 0) || '';
+    }
+    function findPcsText(obj, depth) {
+        if (!obj || typeof obj !== 'object' || depth > 4) return '';
+        for (const k in obj) {
+            if (/image|url|img/i.test(k)) continue;
+            const v = obj[k];
+            if (typeof v === 'string' || typeof v === 'number') {
+                const t = optionToText(v);
+                if (/\d+\s*(PCS|PC|個|入)/i.test(t) && t.length <= 60) return t;
+            } else if (v && typeof v === 'object') {
+                const r = findPcsText(v, depth + 1);
+                if (r) return r;
+            }
         }
         return '';
+    }
+    // [v1.3.1] 상품 목록 밖(응답 전체)에 옵션이 따로 있는 경우: 같은 잔코드를 가진 묶음에서 PCS 찾기
+    function findPcsByJan(root, jan) {
+        let found = '';
+        const base = String(jan).replace(/-H$/i, '');
+        const walk = (o, d) => {
+            if (found || !o || typeof o !== 'object' || d > 6) return;
+            const vals = Object.values(o);
+            const hasJan = vals.some(v => typeof v === 'string' && (v.trim() === jan || v.trim() === base));
+            if (hasJan) { const t = findPcsText(o, 0); if (t) { found = t; return; } }
+            vals.forEach(v => { if (v && typeof v === 'object') walk(v, d + 1); });
+        };
+        walk(root, 0);
+        return found;
     }
     function extractPcs(optionText) {
         const m = String(optionText || '').match(/(\d+)\s*(PCS|PC|個|入|개)/i);
@@ -355,9 +379,13 @@
                     let processedItems = items.map(it => {
                         let trackNo = String(it.tracking_no || it.invoice_id || it.tracking || it.invoice_no || it.delivery_tracking_no || "").trim();
                         const janCode = (it.jancode || it.jan_code || it.item_id || "-").trim();
-                        const option = extractOption(it);
+                        let option = extractOption(it);
                         const isHalf = /-H$/i.test(janCode);
-                        if (isHalf && !extractPcs(option)) console.warn('[피킹리스트] -H 상품 옵션 PCS 못 찾음', it);
+                        if (isHalf && !extractPcs(option)) {
+                            const alt = findPcsByJan(jsonData, janCode);
+                            if (alt) option = alt;
+                            else console.warn('[피킹리스트] -H 상품 옵션 PCS 못 찾음', JSON.stringify(it));
+                        }
 
                         return {
                             imgHtml: `<img src="${it.image_url_thumb || it.image_url || ''}" style="max-width:55px; max-height:45px;">`,
@@ -707,7 +735,7 @@
                                 (it.qty > 1 ? '<div style="font-size:11px; color:#1565c0; font-weight:900;">=' + (it.qty * it.pcs) + '개</div>' : '') +
                                 '</td>';
                         } else if (it.isHalf) {
-                            janHtml += '<div style="font-size:12px; color:#fff; background:#e69500; font-weight:900; letter-spacing:0; margin-top:2px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">⚠ 옵션(PCS) 확인</div>';
+                            janHtml += '<div style="font-size:12px; color:#fff; background:#e69500; font-weight:900; letter-spacing:0; margin-top:2px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">반박스 · 개수는 포장화면 옵션 확인</div>';
                         }
 
                         let locContent = '<div style="font-weight:900; font-size:14px; line-height:1.3; text-align:center;">' + it.location + '</div>';
