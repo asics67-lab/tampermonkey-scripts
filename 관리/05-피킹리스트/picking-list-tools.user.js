@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.2.0
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴.
+// @version      1.3.0
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -34,6 +34,11 @@
  *    피킹리스트 상단에 "○세트" 배너 + 기준등급 수량칸에 (○set) 를 표시함.
  *  - 미등록 상품은 인쇄창에서 [세트 기준 등록] 버튼으로 그 PC에만 임시 등록 가능.
  *    모든 PC에 적용하려면 KUJI_SETS 에 한 줄 추가해서 GitHub에 올리면 됨.
+ *
+ *  v1.3.0 (옵션 PCS 세트상품 표시)
+ *  - 잔코드 끝이 -H(Half) 인 상품은 옵션칸에 "20PCS" 처럼 1세트 개수가 적혀 있음.
+ *  - 피킹리스트 JANCODE 칸 아래에 옵션을 표시하고, 수량칸에 "×20pcs = 실제 개수"를 표시함.
+ *  - -H 상품인데 옵션에서 PCS를 못 찾으면 "⚠ 옵션(PCS) 확인" 으로 표시함.
  * ============================================================
  */
 
@@ -221,6 +226,37 @@
         }, 500);
     }
 
+    /* [v1.3.0] 상품 옵션 문자열 찾기 (필드 이름이 화면마다 달라서 후보를 넓게 확인) */
+    function optionToText(v) {
+        if (v == null) return '';
+        if (Array.isArray(v)) return v.map(optionToText).filter(Boolean).join(' / ');
+        if (typeof v === 'object') return Object.values(v).map(optionToText).filter(Boolean).join(' / ');
+        return String(v).replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+    }
+    function extractOption(it) {
+        const keys = ['option', 'option_name', 'options', 'item_option', 'option_str', 'option_text', 'option_value', 'opt', 'option1', 'variation', 'spec'];
+        for (const k of keys) {
+            const t = optionToText(it[k]);
+            if (t && t !== '-' && t.toLowerCase() !== 'null') return t;
+        }
+        for (const k in it) {
+            if (!/option/i.test(k)) continue;
+            const t = optionToText(it[k]);
+            if (t && t !== '-' && t.toLowerCase() !== 'null') return t;
+        }
+        // 마지막 수단: 상품명·이미지 등을 뺀 값 중 "숫자+PCS" 가 들어간 것
+        for (const k in it) {
+            if (/title|name|image|url|img/i.test(k)) continue;
+            const v = it[k];
+            if (typeof v === 'string' && /\d+\s*PCS/i.test(v)) return optionToText(v);
+        }
+        return '';
+    }
+    function extractPcs(optionText) {
+        const m = String(optionText || '').match(/(\d+)\s*(PCS|PC|個|入|개)/i);
+        return m ? parseInt(m[1], 10) : 0;
+    }
+
     function extractLocationWithQty(it) {
         let totalQty = parseInt(it.quantity || it.display_quantity || it.qty || "1");
 
@@ -318,11 +354,18 @@
                 if (items.length > 0) {
                     let processedItems = items.map(it => {
                         let trackNo = String(it.tracking_no || it.invoice_id || it.tracking || it.invoice_no || it.delivery_tracking_no || "").trim();
+                        const janCode = (it.jancode || it.jan_code || it.item_id || "-").trim();
+                        const option = extractOption(it);
+                        const isHalf = /-H$/i.test(janCode);
+                        if (isHalf && !extractPcs(option)) console.warn('[피킹리스트] -H 상품 옵션 PCS 못 찾음', it);
 
                         return {
                             imgHtml: `<img src="${it.image_url_thumb || it.image_url || ''}" style="max-width:55px; max-height:45px;">`,
                             productName: (it.title || it.item_name || it.product_name || "").trim(),
-                            janCode: (it.jancode || it.jan_code || it.item_id || "-").trim(),
+                            janCode: janCode,
+                            option: option,
+                            pcs: extractPcs(option),
+                            isHalf: isHalf,
                             qty: parseInt(it.quantity || it.display_quantity || it.qty || "1"),
                             location: extractLocationWithQty(it),
                             tracking: trackNo
@@ -333,7 +376,7 @@
                     processedItems.forEach(item => {
                         // [수정] 잔코드만으로 합치면 같은 잔코드를 잘못 입력한 서로 다른 상품이
                         // 하나로 섞여버릴 수 있어, 상품명까지 같이 확인해서 합산 기준으로 삼음.
-                        const key = `${item.tracking}_${item.janCode}_${item.productName.trim()}`;
+                        const key = `${item.tracking}_${item.janCode}_${item.productName.trim()}_${item.option}`;
                         if (combinedMap.has(key)) {
                             const existing = combinedMap.get(key);
                             existing.qty += item.qty;
@@ -651,6 +694,22 @@
                             }
                         }
 
+                        // [v1.3.0] 옵션 PCS 세트상품 (-H 등)
+                        let janHtml = it.janCode;
+                        if (it.option) {
+                            janHtml += '<div style="font-size:12px; color:#d00; font-weight:900; letter-spacing:0; margin-top:2px;">' + String(it.option).replace(/</g, '&lt;') + '</div>';
+                        }
+                        if (it.pcs > 0 && (it.isHalf || !isKuji)) {
+                            rowStyle = 'style="height:45px; background-color: #e3f2fd !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;"';
+                            qtyTdHtml = '<td style="border:1.5px solid #000; text-align:center; vertical-align:middle; padding:2px 0;">' +
+                                '<div style="font-size:26px; color:red; font-weight:900; line-height:1;">' + it.qty + '</div>' +
+                                '<div style="font-size:11px; color:#1565c0; font-weight:900; margin-top:1px;">×' + it.pcs + 'pcs</div>' +
+                                (it.qty > 1 ? '<div style="font-size:11px; color:#1565c0; font-weight:900;">=' + (it.qty * it.pcs) + '개</div>' : '') +
+                                '</td>';
+                        } else if (it.isHalf) {
+                            janHtml += '<div style="font-size:12px; color:#fff; background:#e69500; font-weight:900; letter-spacing:0; margin-top:2px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">⚠ 옵션(PCS) 확인</div>';
+                        }
+
                         let locContent = '<div style="font-weight:900; font-size:14px; line-height:1.3; text-align:center;">' + it.location + '</div>';
                         if (it.tracking) {
                             locContent += '<div style="font-size:12px; color:#3b82f6; font-weight:bold; margin-top:3px; text-align:center;">' + it.tracking + '</div>';
@@ -660,7 +719,7 @@
                             '<td style="border:1.5px solid #000; text-align:center; font-weight:bold; font-size:12px;">' + displayNo + '</td>' +
                             '<td style="border:1.5px solid #000; text-align:center;">' + it.imgHtml + '</td>' +
                             '<td ' + nameTdStyle + '>' + it.productName + '</td>' +
-                            '<td ' + janTdStyle + '>' + it.janCode + '</td>' +
+                            '<td ' + janTdStyle + '>' + janHtml + '</td>' +
                             qtyTdHtml +
                             (!skip ? '<td rowspan="' + rowspan + '" style="border:1.5px solid #000; text-align:center; background:#fff; padding:4px; max-width:140px; vertical-align:middle;">' + locContent + '</td>' : '') +
                             '<td style="border:1.5px solid #000; text-align:center; font-size:20px; color:#bbb;">□</td>' +
