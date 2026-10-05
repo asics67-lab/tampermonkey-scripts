@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.8.1
+// @version      1.8.2
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -196,6 +196,14 @@
  *    이면 확인창을 띄웁니다. Enter/Esc = 다시 입력, Y 또는 버튼 클릭 = 그대로 진행.
  *    (Enter 연타로 실수로 통과되지 않도록 Enter는 "다시 입력"에 묶었습니다)
  *
+ *  v1.8.2 버그 수정 (보고: "잔코드/상품명으로 카테고리 설정 후 Enter 치면 출고번호로 바뀌어 검색된다")
+ *  - [블록 1] 고속 스캔이 Enter를 가로채서 검색 카테고리를 무조건 출고번호(target=2)로
+ *    바꿔 제출하던 문제를 수정했습니다.
+ *  - 사람이 키보드로 직접 친 입력(글자 간격이 느림)이나 붙여넣기 후 Enter는 이제 가로채지
+ *    않고, 사이트 원래 검색이 고른 카테고리 그대로 실행됩니다.
+ *  - 바코드 스캐너 입력(아주 빠름)이라도 카테고리를 직접 바꿔 둔 경우에는 그 카테고리를
+ *    유지합니다. 카테고리를 건드리지 않았을 때만 기존처럼 출고번호로 맞춰 검색합니다.
+ *
  *  v1.6.2 버그 수정 (요청: "회원 선택칸에 업체번호를 치면 아래 검색칸에도 같이 입력된다")
  *  - [블록 1] 고속 스캔 기능이 화면 전체의 키 입력을 모으고 있어서, 회원 선택 드롭다운
  *    검색창(select2)에 업체번호를 입력하면 그 숫자가 스캔값으로 착각되어 아래 키워드
@@ -214,6 +222,23 @@
     let asciiBuffer = "";
     let finalString = "";
     let scanTimer = null;
+    // [v1.8.2] 사람 타이핑 판별용 (스캐너는 글자 간격이 수 ms, 사람은 보통 80ms 이상)
+    const HUMAN_GAP_MS = 40;
+    let lastCharTime = 0;
+    let humanTyped = false;
+    // [v1.8.2] 사용자가 검색 카테고리를 직접 바꿨는지 (바꿨으면 스캔 때도 그대로 유지)
+    let userPickedTarget = false;
+    document.addEventListener('change', function(e) {
+        if (e.isTrusted && e.target && e.target.matches && e.target.matches('select[name="target"]')) {
+            userPickedTarget = true;
+        }
+    }, true);
+    function resetScanBuffer() {
+        finalString = "";
+        asciiBuffer = "";
+        humanTyped = false;
+        lastCharTime = 0;
+    }
 
     /**
      * 포장 진행 창(Modal)의 실제 가시성 상태 확인
@@ -335,7 +360,7 @@
         // 열리는 원인이 됩니다.
         if (sessionStorage.getItem('qr_scanning_active') === 'true') {
             console.log('[Speed-Scan] 이전 스캔 처리 중이라 이번 스캔은 건너뜁니다:', finalString.trim());
-            finalString = "";
+            resetScanBuffer();
             return;
         }
 
@@ -348,7 +373,8 @@
 
         if (input && form) {
             console.log('%c[Speed-Scan] 제출 데이터:', 'color: #3498db; font-weight: bold;', cleanedString);
-            if (targetSelect) targetSelect.value = "2";
+            // [v1.8.2] 카테고리를 직접 고른 경우에는 바꾸지 않음
+            if (targetSelect && !userPickedTarget) targetSelect.value = "2";
             input.value = cleanedString;
             input.dispatchEvent(new Event('input', { bubbles: true }));
             input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -359,7 +385,7 @@
             window.packingClickDispatched = false;
             window.packingClickInFlight = false;
             form.submit();
-            finalString = "";
+            resetScanBuffer();
         }
     }
 
@@ -424,8 +450,7 @@
         // 스캔은 포커스가 없는 상태(화면)나 키워드 검색칸에서만 모읍니다.
         if (isTypingInOtherField(e.target)) {
             clearTimeout(scanTimer);
-            finalString = "";
-            asciiBuffer = "";
+            resetScanBuffer();
             return;
         }
 
@@ -437,27 +462,39 @@
 
         if (e.key === 'Alt' && asciiBuffer.length >= 2) {
             const char = String.fromCharCode(parseInt(asciiBuffer, 10));
-            if (char) finalString += char;
+            if (char) { finalString += char; lastCharTime = Date.now(); }
             asciiBuffer = "";
             return;
         }
 
         // 로그에 찍힌 Enter/Tab 감지 시 즉시 실행 (가장 빠름)
         if (e.key === 'Enter' || e.key === 'Tab') {
-            e.preventDefault();
             clearTimeout(scanTimer);
+            // [v1.8.2] 사람이 직접 친 입력이거나(느린 타이핑) 모아둔 스캔값이 없으면
+            // (붙여넣기 등) 가로채지 않고 사이트 원래 검색에 맡깁니다 → 고른 카테고리 유지
+            if (humanTyped || finalString.trim().length === 0) {
+                resetScanBuffer();
+                return;
+            }
+            e.preventDefault();
             stealthSubmit();
             return;
         }
 
         // 일반 문자 누적
         if (e.key.length === 1) {
+            const now = Date.now();
+            // [v1.8.2] 글자 사이 간격이 느리면 사람이 직접 타이핑 중인 것으로 표시
+            if (finalString.length > 0 && now - lastCharTime > HUMAN_GAP_MS) humanTyped = true;
+            lastCharTime = now;
             finalString += e.key;
         }
 
         // 스캔 간격이 매우 짧으므로(3ms), 50ms만 기다려도 입력 종료로 판단 가능
         clearTimeout(scanTimer);
         scanTimer = setTimeout(() => {
+            // [v1.8.2] 사람 타이핑 중에는 자동 제출하지 않음 (Enter로 직접 검색)
+            if (humanTyped) return;
             if (finalString.length > 5) stealthSubmit();
         }, 50); // 기존 250ms -> 50ms로 대폭 단축
 
