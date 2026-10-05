@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.1
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시.
+// @version      1.4.0
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -39,6 +39,13 @@
  *  - 잔코드 끝이 -H(Half) 인 상품은 옵션칸에 "20PCS" 처럼 1세트 개수가 적혀 있음.
  *  - 피킹리스트 JANCODE 칸 아래에 옵션을 표시하고, 수량칸에 "×20pcs = 실제 개수"를 표시함.
  *  - -H 상품인데 옵션에서 PCS를 못 찾으면 "⚠ 옵션(PCS) 확인" 으로 표시함.
+ *
+ *  v1.4.0 (같은 Tracking 묶음 출고건 표시)
+ *  - 포장화면의 "Tracking番号 重複確認" 팝업과 같은 방식(종합관리 검색)으로,
+ *    배송대행 LH/OH 출고건의 Tracking번호를 다른 LH/OH 출고건도 쓰고 있으면
+ *    피킹리스트 상단에 "🔗 같은 Tracking 묶음" 박스로 출고번호·진행상태를 표시함.
+ *  - 이번에 같이 인쇄되는 출고건은 [이번 출력] 표시, 현재 출고건은 "← 현재" 표시.
+ *  - 로케이션/트래킹 칸의 트래킹번호 옆에도 "🔗 n건" 표시.
  * ============================================================
  */
 
@@ -281,6 +288,79 @@
         return m ? parseInt(m[1], 10) : 0;
     }
 
+    /* ==========================================================
+     * [v1.4.0] 같은 Tracking번호를 쓰는 LH/OH 출고건 조회
+     *  (포장 스크립트의 "Tracking番号 重複確認" 과 같은 종합관리 검색 사용)
+     * ========================================================== */
+    const DELIVERY_NO_PATTERN = /^(LH|OH)/i;
+    const mgtCache = new Map();
+
+    function cellText(el) {
+        return (el?.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function extractRowTrackingNo(row) {
+        if (!row) return '';
+        const fromData = (row.querySelector('.sub_checkbox')?.dataset.trackingno || '').trim();
+        if (fromData) return fromData;
+        const link = row.querySelector('.show_tracking_page');
+        if (link?.dataset.trackingno) return String(link.dataset.trackingno).trim();
+        const trackingCell = row.cells[6];
+        if (!trackingCell) return '';
+        return cellText(trackingCell).replace(/\s/g, '');
+    }
+
+    function parseMgtHtml(html, trackingNo) {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const results = [];
+        const seen = new Set();
+        doc.querySelectorAll('table.table-bordered tbody tr').forEach(row => {
+            if (row.cells.length < 15) return;
+            const deliveryLink = row.cells[4]?.querySelector('.show-delivery-detail-btn');
+            const deliveryNo = cellText(deliveryLink || row.cells[4]).split(/\s+/)[0];
+            if (!DELIVERY_NO_PATTERN.test(deliveryNo)) return;
+            const tl = row.cells[13]?.querySelector('.show_tracking_page');
+            const rowTracking = (tl?.dataset.trackingno || cellText(row.cells[13])).replace(/\s/g, '');
+            if (rowTracking !== trackingNo) return;
+            const status = cellText(row.cells[14]?.querySelector('.badge') || row.cells[14]) || '-';
+            if (seen.has(deliveryNo)) return;
+            seen.add(deliveryNo);
+            results.push({ deliveryNo: deliveryNo, status: status });
+        });
+        // 출고번호 큰 순서(포장화면 팝업과 같은 순서)
+        results.sort((a, b) => b.deliveryNo.localeCompare(a.deliveryNo));
+        return results;
+    }
+
+    async function fetchMgtByTracking(trackingNo) {
+        if (mgtCache.has(trackingNo)) return mgtCache.get(trackingNo);
+        const url = new URL(location.origin + '/admin/mgt/index');
+        url.searchParams.set('action', 'search');
+        url.searchParams.set('tracking_no', trackingNo);
+        url.searchParams.set('pagesize', '500');
+        const res = await fetch(url.toString(), { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = parseMgtHtml(await res.text(), trackingNo);
+        mgtCache.set(trackingNo, data);
+        return data;
+    }
+
+    // 결과: { list: [{trackingNo, orders:[...] }], error: '' }  (2건 이상 묶인 것만)
+    async function findSameTrackingOrders(trackingNos) {
+        const list = [];
+        let error = '';
+        for (const t of trackingNos) {
+            try {
+                const orders = await fetchMgtByTracking(t);
+                if (orders.length >= 2) list.push({ trackingNo: t, orders: orders });
+            } catch (e) {
+                console.error('[피킹리스트] 같은 Tracking 조회 실패', t, e);
+                error = String(e.message || e);
+            }
+        }
+        return { list: list, error: error };
+    }
+
     function extractLocationWithQty(it) {
         let totalQty = parseInt(it.quantity || it.display_quantity || it.qty || "1");
 
@@ -346,8 +426,10 @@
                 receiver: box.getAttribute('data-name') || '-',
                 type: box.getAttribute('data-type') || (tr && tr.innerText.includes('배송대행') ? 'delivery' : 'shop'),
                 isOcean: isOcean,
+                rowTracking: extractRowTrackingNo(tr),
                 originalIndex: i
             };
+            showOverlay(`🚀 데이터를 수집하여 이중 정렬 가공 중... (${i + 1} / ${checkedBoxes.length})`);
 
             try {
                 const formData = new FormData();
@@ -469,12 +551,22 @@
                     let reqMsg = (jsonData.requirement || packingData.requirement || "").trim();
                     let cleanMsg = reqMsg.replace(/^\[?추가\s?요청\]?\s*/i, "");
 
+                    // [v1.4.0] 배송대행 LH/OH 건: 같은 Tracking번호를 쓰는 다른 출고건 조회
+                    let sameTracking = { list: [], error: '' };
+                    if (DELIVERY_NO_PATTERN.test(task.outNum) && (task.type.includes('delivery') || tr?.innerText.includes('배송대행') || tr?.innerText.includes('배송 대행'))) {
+                        const tSet = new Set();
+                        if (task.rowTracking) tSet.add(task.rowTracking);
+                        processedItems.forEach(it => { if (it.tracking) tSet.add(it.tracking); });
+                        if (tSet.size > 0) sameTracking = await findSameTrackingOrders(Array.from(tSet));
+                    }
+
                     for (let p = 0; p * ITEMS_PER_PAGE < processedItems.length; p++) {
                         collectedGroups.push({
                             outNum: task.outNum, receiver: task.receiver, orderDate: task.orderDate,
                             requests: Array.from(reqSet),
                             requirementMsg: cleanMsg,
                             isOcean: task.isOcean,
+                            sameTracking: sameTracking,
                             items: processedItems.slice(p * ITEMS_PER_PAGE, (p + 1) * ITEMS_PER_PAGE),
                             pageNum: p + 1, totalPage: Math.ceil(processedItems.length / ITEMS_PER_PAGE),
                             originalIndex: task.originalIndex
@@ -529,6 +621,15 @@
             tr { page-break-inside: avoid; }
             .kuji-banner { border:3px solid #d00; background:#fff4f4; padding:6px 10px; margin:0 0 8px 0; font-weight:900; font-size:15px; color:#000; display:flex; align-items:center; gap:10px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
             .kuji-banner.warn { border-color:#e69500; background:#fff8e6; }
+            .st-box { border:3px solid #7b1fa2; background:#f8f0fc; padding:5px 8px; margin:0 0 8px 0; font-size:12px; color:#000; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            .st-box .st-title { font-weight:900; font-size:14px; margin-bottom:4px; }
+            .st-box .st-list { display:flex; flex-wrap:wrap; gap:4px; }
+            .st-chip { border:1.5px solid #555; border-radius:4px; padding:2px 6px; background:#fff; font-weight:bold; white-space:nowrap; }
+            .st-chip.cur { border-color:#7b1fa2; background:#fff3cd; font-weight:900; }
+            .st-chip.done { color:#888; border-color:#bbb; }
+            .st-chip .st-stat { font-weight:900; margin-left:4px; }
+            .st-chip .st-stat.hold { color:#d00; }
+            .st-chip .st-here { margin-left:4px; background:#7b1fa2; color:#fff; border-radius:3px; padding:0 4px; font-size:10px; }
             .kuji-reg { padding:3px 10px; background:#e69500; color:white; border:none; border-radius:4px; font-weight:bold; cursor:pointer; }
         </style>`;
 
@@ -639,6 +740,40 @@
                 });
                 /* ---------- [v1.1.0] 끝 ---------- */
 
+                /* ---------- [v1.4.0] 같은 Tracking 묶음 출고건 표시 ---------- */
+                const PRINTED_OUTS = new Set(groups.map(g => String(g.outNum).trim()));
+                function escHtml(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+                function sameTrackingHtml(g) {
+                    const st = g.sameTracking || { list: [], error: '' };
+                    let out = '';
+                    st.list.forEach(t => {
+                        const chips = t.orders.map(o => {
+                            const isCur = o.deliveryNo === String(g.outNum).trim();
+                            const isDone = o.status.indexOf('완료') >= 0;
+                            const isHold = o.status.indexOf('보류') >= 0 || o.status.indexOf('취소') >= 0;
+                            return '<span class="st-chip' + (isCur ? ' cur' : (isDone ? ' done' : '')) + '">' +
+                                escHtml(o.deliveryNo) + (isCur ? ' ← 현재' : '') +
+                                '<span class="st-stat' + (isHold ? ' hold' : '') + '">[' + escHtml(o.status) + ']</span>' +
+                                (!isCur && PRINTED_OUTS.has(o.deliveryNo) ? '<span class="st-here">이번 출력</span>' : '') +
+                                '</span>';
+                        }).join('');
+                        out += '<div class="st-box"><div class="st-title">🔗 같은 Tracking 묶음 출고건 ' + t.orders.length + '건 · Tracking No: ' + escHtml(t.trackingNo) + '</div>' +
+                               '<div class="st-list">' + chips + '</div></div>';
+                    });
+                    if (st.error) {
+                        out += '<div class="no-print" style="background:#e69500; color:#fff; padding:4px 8px; margin-bottom:6px; font-weight:bold; font-size:12px;">⚠ 같은 Tracking 출고건 조회 실패 (' + escHtml(st.error) + ') - 포장화면에서 확인해 주세요</div>';
+                    }
+                    return out;
+                }
+
+                function sameTrackingCount(g, trackingNo) {
+                    const st = g.sameTracking || { list: [] };
+                    const f = st.list.find(t => t.trackingNo === trackingNo);
+                    return f ? f.orders.length : 0;
+                }
+                /* ---------- [v1.4.0] 끝 ---------- */
+
                 function renderAll() {
                 const gs = JSON.parse(JSON.stringify(groups));
                 const kujiInfo = computeKujiInfo(gs);
@@ -740,7 +875,9 @@
 
                         let locContent = '<div style="font-weight:900; font-size:14px; line-height:1.3; text-align:center;">' + it.location + '</div>';
                         if (it.tracking) {
-                            locContent += '<div style="font-size:12px; color:#3b82f6; font-weight:bold; margin-top:3px; text-align:center;">' + it.tracking + '</div>';
+                            const stCnt = sameTrackingCount(g, it.tracking);
+                            locContent += '<div style="font-size:12px; color:#3b82f6; font-weight:bold; margin-top:3px; text-align:center;">' + it.tracking + '</div>' +
+                                (stCnt >= 2 ? '<div style="font-size:11px; color:#fff; background:#7b1fa2; font-weight:900; margin-top:2px; border-radius:3px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">🔗 같은 Tracking ' + stCnt + '건</div>' : '');
                         }
 
                         rows += '<tr ' + rowStyle + '>' +
@@ -786,6 +923,7 @@
                                         '<div style="color:#ff0000; font-weight:900; font-size:12px; max-width:70%;">' + (g.pageNum===1?reqString:"") + '</div>' +
                                         '<div style="font-size:22px; font-weight:900; color:#000;">'+g.outNum+'</div>' +
                                     '</div>' +
+                                    (g.pageNum === 1 ? sameTrackingHtml(g) : '') +
                                     kujiBannerHtml(kujiMap) +
                                     '<table style="width:100%; border-collapse:collapse; table-layout:fixed; border:2px solid #000;">' +
                                         '<thead style="background:#e8e8e8; font-size:13px; font-weight:bold;">' +
