@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] 트래킹넘버 모달 통합 (마스터패치본 + 회원명고정 + 하이픈표시 + JAN강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.2
+// @version      1.3.3
 // @description  입고 처리 모달(trackingno) 및 라벨 인쇄(locationlabel) 화면 통합본. 원본: A-1-13(베이스) + A-1-2(회원명 고정) + A-1-3(하이픈 표시) + A-1-12 중 입고 JAN강조 발췌
 // @author       물류팀
 // @match        https://platform.aispel.com/admin/store/trackingno*
@@ -55,6 +55,13 @@
  *  - 목록의 "Print"(라벨 재출력)를 눌러도 인쇄가 안 되던 문제 수정.
  *    원인: 이 스크립트가 원본 라벨 페이지(/admin/print/locationlabel/)를 무조건 차단·종료함.
  *    해결: 목록 Print 클릭을 가로채서 해당 행 정보로 55x45 커스텀 라벨을 만들어 인쇄.
+ *
+ *  v1.3.3 수정 사항 (2026-10-07)
+ *  - 합배송(트래킹 2개 이상이 한 출고번호로 묶인 건)인데도 라벨에 출고번호가 찍히던 문제 수정.
+ *    원인: 트래킹 개수를 포장목록의 "한 줄" 안에서만 셌음. 합배송이 트래킹별로 여러 줄로
+ *          나뉘어 나오거나 한 줄에 트래킹이 1개만 적혀 있으면 1개로 판단 → 출고번호 출력.
+ *    해결: 포장목록 전체에서 같은 출고번호(LH/LS/OH)에 묶인 트래킹을 모두 모아서 셈.
+ *          2개 이상이면 합배송으로 보고 출고번호를 비움(라벨엔 "미출고 / 일반입고" 표시).
  *
  *  v1.3.2 수정 사항 (2026-09-30)
  *  - 입고창 🗑 삭제 요청이 서버 오류로 실패해도 화면 줄을 지워버려, 삭제된 것처럼 보이던
@@ -168,6 +175,19 @@
                             }
                         });
                     });
+                    // [v1.3.3] 같은 출고번호에 묶인 트래킹을 목록 전체에서 합쳐서 셈 (합배송 판정용)
+                    const trackingsByLH = {};
+                    tempDb.forEach(item => {
+                        const key = cleanStr(item.delivery_no);
+                        if (!trackingsByLH[key]) trackingsByLH[key] = new Set();
+                        (item.all_trackings || []).concat(item.tracking_no).forEach(t => {
+                            const c = cleanStr(t);
+                            if (c) trackingsByLH[key].add(c);
+                        });
+                    });
+                    tempDb.forEach(item => {
+                        item.all_trackings = [...trackingsByLH[cleanStr(item.delivery_no)]];
+                    });
                     shippingDatabase = tempDb;
                     console.log("[Tampermonkey] 우회 매칭 DB 수립 성공! 활성화 데이터 수:", shippingDatabase.length);
                     resolve();
@@ -229,11 +249,14 @@
             const cleanT = cleanStr(trackingNo);
             const matchedItems = shippingDatabase.filter(item => cleanStr(item.tracking_no) === cleanT);
             if (matchedItems.length === 0) return '';
-            const targetItem = matchedItems[0];
-            const deliveryNo = targetItem.delivery_no;
-            const trackingCount = (targetItem.all_trackings || []).length || 1;
-            if (trackingCount === 1) return deliveryNo || '';
-            return '';
+            // [v1.3.3] 이 트래킹이 속한 출고번호 중 하나라도 트래킹이 2개 이상(합배송)이면 출고번호를 비움
+            const isCombined = matchedItems.some(item => (item.all_trackings || []).length > 1);
+            const lhSet = [...new Set(matchedItems.map(item => item.delivery_no))];
+            if (isCombined || lhSet.length > 1) {
+                console.log('[Tampermonkey] 합배송 건 → 라벨에 출고번호 미표시:', trackingNo, lhSet, matchedItems[0].all_trackings);
+                return '';
+            }
+            return matchedItems[0].delivery_no || '';
         }
         function DB_Sync_Test(str) { return str && str !== "undefined" && str !== "null" && str.length > 2; }
 
