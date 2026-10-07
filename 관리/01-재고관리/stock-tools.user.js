@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [관리] 재고관리 통합 도구 (통관방식조회 + 다나오로시 + FL로케이션현황)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.2.1
+// @version      1.3.0
 // @description  재고관리(settlement/stock) 및 로케이션 조회 화면 통합본. 원본: 재고관리 통관방식 조회 v3.1 + 구매대행 다나오로시 출력본 v24.1(엑셀 합산/구분선 버그 수정) + FL 로케이션 사용 현황 v11.5
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/settlement/stock*
@@ -45,6 +45,30 @@
  *    이제 로케이션 값을 저장할 때 콜론(:) 뒤는 잘라내고 순수 로케이션 코드만
  *    기준으로 쓰도록 수정하여, 진짜 같은 자리면 항상 합쳐지고 구분선도 로케이션이
  *    실제로 바뀔 때만 그어지도록 함.
+ *
+ *  v1.3.0 수정 사항 ([블록 2] 다나오로시만 수정, 블록 1·3은 변경 없음)
+ *  1) 엑셀에서 로케이션이 날짜로 바뀌는 문제 수정
+ *     - "H1-1-1"이 일본어 엑셀에서 平成1年1月1日(=S64.1.1)로 자동 변환되던 문제.
+ *       로케이션·회원사명·상품명 칸에도 JAN 칸과 같은 문자열 서식(mso-number-format:'\@', x:str) 적용.
+ *  2) 합쳐진 줄의 고객별 내역 표시
+ *     - 같은 로케이션+JAN 합산 방식은 그대로 두고, 회원사명 칸에 "고객명 수량"을
+ *       수량 많은 순으로 줄바꿈해서 모두 표시 (화면·인쇄·엑셀 동일). 고객 1명이면 고객명만.
+ *  3) 출력 시각 기록
+ *     - 화면 제목 아래·인쇄물 상단·엑셀 첫 줄에 "데이터 수집 시각: YYYY-MM-DD HH:mm:ss" 표시
+ *       (다운로드 시점이 아니라 전체 페이지 수집을 끝낸 시점, 일본 시간).
+ *     - 파일명: 다나오로시_전체재고통합_YYYY-MM-DD_HHmm.xls / 선택구역 파일도 동일하게 시각 추가.
+ *     - toISOString()(UTC) 대신 일본 시간 기준으로 날짜 계산.
+ *  4) 페이지 수집 실패 경고
+ *     - 실패한 페이지는 2회까지 재시도, 그래도 실패하면 alert + 화면/인쇄/엑셀 상단에
+ *       빨간 경고("N페이지 수집 실패 - 시트가 불완전합니다") 표시.
+ *     - 수집 행 수와 화면의 "합계：N건"이 다르면 경고 표시.
+ *     - 로케이션 없는 행만 있는 페이지에서 수집이 중간에 멈추던 문제도 함께 수정.
+ *  5) 검색 조건이 걸린 상태로 실행 시 확인창
+ *     - URL에 검색/필터 조건이 있으면 "전체 재고로 출력할까요?" 확인.
+ *       [확인] 조건을 빼고 전체 수집 / [취소] 현재 조건 그대로 수집(상단에 조건 안내 표시).
+ *  6) 비고 칸에 발송 대기 수량 자동 표시
+ *     - "종류"가 발송 대기 재고인 수량을 합쳐 "발송대기 N"으로 비고 칸 위쪽에 표시
+ *       (아래쪽은 실사 메모 공간으로 남김, 비고 칸 폭 8% → 10%).
  * ============================================================
  */
 
@@ -352,7 +376,7 @@
 })();
 
 /* ------------------------------------------------------------
- * [블록 2] 구매대행 다나오로시 출력본 v24.1
+ * [블록 2] 구매대행 다나오로시 출력본 v24.1 (+ v1.3.0 개선)
  * ------------------------------------------------------------ */
 (function() {
     'use strict';
@@ -361,6 +385,20 @@
     const zones = new Set();
     const selectedZones = new Set();
 
+    // [v1.3.0] 수집 결과 정보 (수집 시각 / 실패 페이지 / 행 수 검증 / 검색 조건)
+    const collectInfo = {
+        collectedAt: null,      // collectAllPagesData()가 끝난 시점 (Date)
+        failedPages: [],        // 재시도 후에도 실패한 페이지 번호
+        totalCount: null,       // 사이트 화면의 "합계：N건"
+        scannedCount: 0,        // 실제로 읽어 들인 재고 행 수 (로케이션 없는 행 포함)
+        noLocationCount: 0,     // 로케이션이 비어 있어 시트에서 빠진 행 수
+        appliedFilters: []      // 적용된 상태로 출력한 검색 조건 (전체 출력이면 빈 배열)
+    };
+
+    // [v1.3.0] 검색 조건이 아닌 파라미터 (이것 외에 값이 있는 파라미터는 검색/필터 조건으로 봄)
+    const NON_FILTER_PARAMS = ['page', 'pagesize', 'sort', 'order', 'direction', 'sort_by', 'sort_order'];
+    const PAGE_RETRY_COUNT = 2;   // 페이지 수집 실패 시 재시도 횟수
+
     const styleHTML = `
         <style id="simplified-inventory-style">
             #simplified-container { padding: 30px 20px; font-family: 'Public Sans', sans-serif; background: #fff; color: #333; max-width: 100%; margin: 0 auto; position: relative; z-index: 99999; }
@@ -368,6 +406,14 @@
             .header-main { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
             .tool-title { margin: 0; font-size: 24px; font-weight: bold; color: #1e293b; }
             .tool-btn-group { display: flex; gap: 12px; }
+
+            .collect-meta { font-size: 14px; font-weight: bold; color: #334155; margin-top: 6px; }
+            .collect-warning { margin-top: 10px; padding: 10px 14px; border: 2px solid #dc2626; background: #fef2f2; color: #dc2626; font-size: 15px; font-weight: bold; border-radius: 6px; }
+            .collect-notice { margin-top: 8px; padding: 8px 12px; border: 1px solid #f59e0b; background: #fffbeb; color: #b45309; font-size: 13px; font-weight: bold; border-radius: 6px; }
+            .collect-note { margin-top: 6px; font-size: 12px; color: #64748b; }
+
+            .client-breakdown { font-size: 12px; line-height: 1.5; }
+            .waiting-note { display: block; color: #d63031; font-weight: bold; font-size: 11px; line-height: 1.3; }
 
             .zone-filter-group { display: flex; gap: 8px; border-top: 1px dashed #cbd5e1; padding-top: 12px; flex-wrap: wrap; }
             .filter-btn { padding: 6px 14px; font-size: 13px; border-radius: 20px; cursor: pointer; border: 1px solid #cbd5e1; background: #fff; font-weight: bold; color: #64748b; user-select: none; }
@@ -400,10 +446,55 @@
                 .sublocation-boundary-tr td { border-top: 4px double #e65100 !important; }
                 .inventory-table th { background-color: #e2e8f0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
                 .tracking-highlight { font-size: 11pt !important; font-weight: bold !important; color: #000 !important; }
+                .collect-warning, .collect-notice { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+                .waiting-note { color: #000 !important; }
                 @page { size: A4 portrait; margin: 12mm 8mm; }
             }
         </style>
     `;
+
+    // [v1.3.0] HTML 특수문자 처리 (고객명/상품명에 & < > 가 있어도 표가 깨지지 않도록)
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    // [v1.3.0] 일본 시간(JST, UTC+9) 기준 날짜/시각 문자열
+    // toISOString()은 UTC라서 일본 시간 오전 0~9시에는 날짜가 하루 전으로 찍히는 문제가 있었음
+    function formatJst(date) {
+        const d = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+        const p = n => String(n).padStart(2, '0');
+        const ymd = `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`;
+        return {
+            fileStamp: `${ymd}_${p(d.getUTCHours())}${p(d.getUTCMinutes())}`,
+            display: `${ymd} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+        };
+    }
+
+    // [v1.3.0] 발송 대기 재고 판별 (재고관리 "종류" 열)
+    function isWaitingStock(category) {
+        return /발송\s*대기|発送待/.test(category || '');
+    }
+
+    // [v1.3.0] 현재 URL에 걸린 검색/필터 조건 목록
+    function getActiveFilters() {
+        const params = new URLSearchParams(window.location.search);
+        const filters = [];
+        params.forEach((value, key) => {
+            if (NON_FILTER_PARAMS.includes(key.toLowerCase())) return;
+            if (String(value).trim() === '') return;
+            filters.push({ key, value });
+        });
+        return filters;
+    }
+
+    function parseTotalCount(text) {
+        const match = (text || '').match(/합계：([0-9,]+)건/);
+        return match ? (parseInt(match[1].replace(/,/g, '')) || 0) : null;
+    }
 
     function fetchPageHtml(url) {
         return new Promise((resolve, reject) => {
@@ -415,9 +506,33 @@
         });
     }
 
-    async function collectAllPagesData() {
+    // [v1.3.0] 실패 시 같은 페이지를 PAGE_RETRY_COUNT회까지 재시도
+    async function fetchPageHtmlWithRetry(url, pageNo) {
+        let lastError = null;
+        for (let attempt = 0; attempt <= PAGE_RETRY_COUNT; attempt++) {
+            try {
+                return await fetchPageHtml(url);
+            } catch (error) {
+                lastError = error;
+                console.warn(`${pageNo} 페이지 수집 실패 (시도 ${attempt + 1}/${PAGE_RETRY_COUNT + 1})`, error);
+                if (attempt < PAGE_RETRY_COUNT) {
+                    updateMaskText(`⚠️ ${pageNo} 페이지 수집 실패 - 재시도 중... (${attempt + 1}/${PAGE_RETRY_COUNT})`);
+                    await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+                }
+            }
+        }
+        throw lastError;
+    }
+
+    async function collectAllPagesData(removeFilters) {
         rowsData.length = 0;
         zones.clear();
+        selectedZones.clear();
+        collectInfo.failedPages = [];
+        collectInfo.totalCount = null;
+        collectInfo.scannedCount = 0;
+        collectInfo.noLocationCount = 0;
+        collectInfo.collectedAt = null;
 
         let currentPage = 1;
         let totalPages = 1;
@@ -425,13 +540,24 @@
 
         const baseUrl = window.location.origin + window.location.pathname;
         const urlParams = new URLSearchParams(window.location.search);
+
+        // [v1.3.0] 전체 출력을 선택하면 검색/필터 조건을 빼고 수집
+        const activeFilters = getActiveFilters();
+        if (removeFilters) {
+            activeFilters.forEach(f => urlParams.delete(f.key));
+            collectInfo.appliedFilters = [];
+        } else {
+            collectInfo.appliedFilters = activeFilters;
+        }
         urlParams.set('pagesize', '1000');
 
-        const totalItemsText = $('.text-start small').text() || "";
-        const match = totalItemsText.match(/합계：([0-9,]+)건/);
-        if (match) {
-            const totalCount = parseInt(match[1].replace(/,/g, '')) || 0;
-            totalPages = Math.ceil(totalCount / 1000) || 1;
+        // 화면의 합계는 필터를 뺀 경우 의미가 달라지므로, 필터를 유지할 때만 미리 사용
+        if (!removeFilters) {
+            const domTotal = parseTotalCount($('.text-start small').text());
+            if (domTotal !== null) {
+                collectInfo.totalCount = domTotal;
+                totalPages = Math.ceil(domTotal / 1000) || 1;
+            }
         }
 
         while (hasNextPage) {
@@ -440,61 +566,85 @@
 
             const targetUrl = `${baseUrl}?${urlParams.toString()}`;
 
+            let htmlData;
             try {
-                const htmlData = await fetchPageHtml(targetUrl);
-                const $html = $(htmlData);
-                const $rows = $html.find('.table-responsive table:last tbody tr');
-
-                if ($rows.length === 0) {
-                    hasNextPage = false;
-                    break;
-                }
-
-                let validRowInserted = false;
-                $rows.each(function() {
-                    const $row = $(this);
-                    if ($row.find('td').length < 10) return;
-
-                    const clientName = $row.find('td:nth-child(2)').text().trim() || '-';
-                    const category = $row.find('td:nth-child(3)').text().trim();
-                    const type = $row.find('td:nth-child(4)').text().trim();
-                    const janCode = $row.find('td:nth-child(5)').text().trim();
-                    const productName = $row.find('td:nth-child(6)').text().trim();
-                    const quantity = parseInt($row.find('td:nth-child(7)').text().trim()) || 0;
-                    const rawLocation = $row.find('td:nth-child(11)').text().trim();
-
-                    if (rawLocation) {
-                        // [v1.2.0 수정] 원본 사이트의 로케이션 텍스트에 "G1-2-1 : 10개"처럼
-                        // 콜론 뒤에 부가정보(박스당 개수 등)가 붙어 나오는 경우가 있어,
-                        // 이 부분을 그대로 비교하면 같은 자리인데도 문자열이 달라서
-                        // 병합이 안 되고 구분선도 엉뚱하게 그어지는 문제가 있었습니다.
-                        // 콜론 뒤는 잘라내고 순수 로케이션 코드만 기준으로 사용합니다.
-                        const location = rawLocation.replace(/[:：].*$/, '').trim() || rawLocation;
-
-                        let zone = location.charAt(0).toUpperCase();
-
-                        if (!/[A-Z]/.test(zone)) {
-                            zone = '기타';
-                        }
-                        zones.add(zone);
-
-                        const locParts = location.split('-');
-                        const subLocation = locParts.length >= 2 ? `${locParts[0]}-${locParts[1]}` : location;
-
-                        rowsData.push({ clientName, category, type, janCode, productName, quantity, location, subLocation, zone });
-                        validRowInserted = true;
-                    }
-                });
-
-                const $nextButton = $html.find('.pagination .page-item:last-child:not(.disabled)');
-                if (validRowInserted && $nextButton.length > 0 && $nextButton.find('a').length > 0) {
-                    currentPage++;
-                } else {
-                    hasNextPage = false;
-                }
-
+                htmlData = await fetchPageHtmlWithRetry(targetUrl, currentPage);
             } catch (error) {
-                console.error(`${currentPage} 페이지 수집 중 오류`, error);
+                // [v1.3.0] 예전에는 여기서 조용히 멈췄음 → 실패 페이지를 기록하고,
+                // 남은 페이지가 있으면 다음 페이지 수집을 계속함
+                console.error(`${currentPage} 페이지 수집 중 오류 (재시도 ${PAGE_RETRY_COUNT}회 후 실패)`, error);
+                collectInfo.failedPages.push(currentPage);
+                if (currentPage < totalPages) {
+                    currentPage++;
+                    continue;
+                }
+                break;
+            }
+
+            const $html = $(htmlData);
+
+            // [v1.3.0] 수집한 페이지의 "합계：N건"으로 총 건수/총 페이지 수를 확정
+            if (collectInfo.totalCount === null) {
+                const pageTotal = parseTotalCount($html.find('.text-start small').text());
+                if (pageTotal !== null) {
+                    collectInfo.totalCount = pageTotal;
+                    totalPages = Math.ceil(pageTotal / 1000) || 1;
+                }
+            }
+
+            const $rows = $html.find('.table-responsive table:last tbody tr');
+
+            if ($rows.length === 0) {
+                hasNextPage = false;
+                break;
+            }
+
+            let dataRowFound = false;
+            $rows.each(function() {
+                const $row = $(this);
+                if ($row.find('td').length < 10) return;
+
+                dataRowFound = true;
+                collectInfo.scannedCount++;
+
+                const clientName = $row.find('td:nth-child(2)').text().trim() || '-';
+                const category = $row.find('td:nth-child(3)').text().trim();
+                const type = $row.find('td:nth-child(4)').text().trim();
+                const janCode = $row.find('td:nth-child(5)').text().trim();
+                const productName = $row.find('td:nth-child(6)').text().trim();
+                const quantity = parseInt($row.find('td:nth-child(7)').text().trim()) || 0;
+                const rawLocation = $row.find('td:nth-child(11)').text().trim();
+
+                if (rawLocation) {
+                    // [v1.2.0 수정] 원본 사이트의 로케이션 텍스트에 "G1-2-1 : 10개"처럼
+                    // 콜론 뒤에 부가정보(박스당 개수 등)가 붙어 나오는 경우가 있어,
+                    // 이 부분을 그대로 비교하면 같은 자리인데도 문자열이 달라서
+                    // 병합이 안 되고 구분선도 엉뚱하게 그어지는 문제가 있었습니다.
+                    // 콜론 뒤는 잘라내고 순수 로케이션 코드만 기준으로 사용합니다.
+                    const location = rawLocation.replace(/[:：].*$/, '').trim() || rawLocation;
+
+                    let zone = location.charAt(0).toUpperCase();
+
+                    if (!/[A-Z]/.test(zone)) {
+                        zone = '기타';
+                    }
+                    zones.add(zone);
+
+                    const locParts = location.split('-');
+                    const subLocation = locParts.length >= 2 ? `${locParts[0]}-${locParts[1]}` : location;
+                    const isWaiting = isWaitingStock(category);
+
+                    rowsData.push({ clientName, category, type, janCode, productName, quantity, location, subLocation, zone, isWaiting });
+                } else {
+                    collectInfo.noLocationCount++;
+                }
+            });
+
+            const $nextButton = $html.find('.pagination .page-item:last-child:not(.disabled)');
+            // [v1.3.0] 로케이션 없는 행만 있는 페이지에서도 수집이 멈추지 않도록 "데이터 행 존재" 기준으로 판단
+            if (dataRowFound && $nextButton.length > 0 && $nextButton.find('a').length > 0) {
+                currentPage++;
+            } else {
                 hasNextPage = false;
             }
         }
@@ -508,6 +658,37 @@
         });
 
         zones.forEach(z => selectedZones.add(z));
+
+        // [v1.3.0] 데이터 수집 완료 시각 (다운로드 시각이 아님)
+        collectInfo.collectedAt = new Date();
+    }
+
+    // [v1.3.0] 수집 결과 경고 문구 목록
+    function getCollectWarnings() {
+        const warnings = [];
+        if (collectInfo.failedPages.length > 0) {
+            warnings.push(`${collectInfo.failedPages.join(', ')}페이지 수집 실패 - 시트가 불완전합니다`);
+        }
+        if (collectInfo.totalCount === null) {
+            warnings.push(`화면의 합계 건수를 확인하지 못했습니다 - 수집 행 수 ${collectInfo.scannedCount.toLocaleString()}건 (누락 여부 확인 불가)`);
+        } else if (collectInfo.scannedCount !== collectInfo.totalCount) {
+            warnings.push(`수집 행 수 불일치 - 수집 ${collectInfo.scannedCount.toLocaleString()}건 / 화면 합계 ${collectInfo.totalCount.toLocaleString()}건`);
+        }
+        return warnings;
+    }
+
+    function getFilterNotice() {
+        if (collectInfo.appliedFilters.length === 0) return '';
+        const text = collectInfo.appliedFilters.map(f => `${f.key}=${f.value}`).join(', ');
+        return `※ 검색 조건이 적용된 일부 재고만 출력됨 (${text})`;
+    }
+
+    function getCollectedAtText() {
+        return collectInfo.collectedAt ? formatJst(collectInfo.collectedAt).display : '-';
+    }
+
+    function getFileStamp() {
+        return formatJst(collectInfo.collectedAt || new Date()).fileStamp;
     }
 
     function updateMaskText(text) {
@@ -565,12 +746,38 @@
         rawRows.forEach(row => {
             const match = grouped.find(g => g.location === row.location && g.janCode === row.janCode);
             if (match) {
+                // 수량 합산 방식은 기존과 동일
                 match.quantity += row.quantity;
+                // [v1.3.0] 고객별 내역과 발송 대기 수량도 함께 모음
+                addClientQty(match, row);
+                if (row.isWaiting) match.waitingQty += row.quantity;
             } else {
-                grouped.push({ ...row });
+                const newGroup = { ...row, clients: [], waitingQty: row.isWaiting ? row.quantity : 0 };
+                addClientQty(newGroup, row);
+                grouped.push(newGroup);
             }
         });
+        // 고객별 내역은 수량이 많은 순서로 표시
+        grouped.forEach(g => g.clients.sort((a, b) => b.qty - a.qty));
         return grouped;
+    }
+
+    // [v1.3.0] 같은 고객이 여러 줄이면 한 고객으로 합쳐서 기록
+    function addClientQty(group, row) {
+        const existing = group.clients.find(c => c.name === row.clientName);
+        if (existing) {
+            existing.qty += row.quantity;
+        } else {
+            group.clients.push({ name: row.clientName, qty: row.quantity });
+        }
+    }
+
+    // [v1.3.0] 회원사명 칸 내용: 고객 1명이면 고객명만, 여러 명이면 "고객명 수량"을 줄바꿈으로 나열
+    function buildClientCell(row, lineBreak) {
+        if (!row.clients || row.clients.length <= 1) {
+            return escapeHtml(row.clientName);
+        }
+        return row.clients.map(c => `${escapeHtml(c.name)} ${c.qty}`).join(lineBreak);
     }
 
     function renderTableRows() {
@@ -591,9 +798,11 @@
             while (l < locSpan) {
                 let janSpan = 0;
                 let totalQty = 0;
+                let waitingQty = 0;
 
                 while (l + janSpan < locSpan && filteredRows[i + l].janCode === filteredRows[i + l + janSpan].janCode) {
                     totalQty += filteredRows[i + l + janSpan].quantity;
+                    waitingQty += filteredRows[i + l + janSpan].waitingQty || 0;
                     janSpan++;
                 }
 
@@ -611,19 +820,22 @@
                     }
 
                     let formattedJan = formatJanCodeWeb(row.janCode, row.productName);
+                    const clientCell = buildClientCell(row, '<br>');
+                    const clientClass = row.clients && row.clients.length > 1 ? ' class="client-breakdown"' : '';
 
                     tableRowsHTML += `<tr class="${rowClasses.join(' ')}" data-zone="${row.zone}">`;
-                    tableRowsHTML += `<td style="width:23%; vertical-align:middle;">${row.clientName}</td>`;
-                    tableRowsHTML += `<td style="width:32%; vertical-align:middle;">${row.productName || '-'}</td>`;
+                    tableRowsHTML += `<td style="width:23%; vertical-align:middle;"${clientClass}>${clientCell}</td>`;
+                    tableRowsHTML += `<td style="width:30%; vertical-align:middle;">${escapeHtml(row.productName || '-')}</td>`;
 
                     if (l === 0 && k === 0) {
-                        tableRowsHTML += `<td style="width:13%; font-weight:bold; color:#0f172a; vertical-align:middle;" rowspan="${locSpan}">${row.location}</td>`;
+                        tableRowsHTML += `<td style="width:13%; font-weight:bold; color:#0f172a; vertical-align:middle;" rowspan="${locSpan}">${escapeHtml(row.location)}</td>`;
                     }
 
                     if (k === 0) {
+                        const waitingHtml = waitingQty > 0 ? `<span class="waiting-note">발송대기 ${waitingQty}</span>` : '';
                         tableRowsHTML += `<td style="width:18%; vertical-align:middle;" rowspan="${janSpan}">${formattedJan}</td>`;
                         tableRowsHTML += `<td class="text-center" style="width:6%; vertical-align:middle; font-weight:bold;" rowspan="${janSpan}">${totalQty}</td>`;
-                        tableRowsHTML += `<td style="width:8%;" rowspan="${janSpan}"></td>`;
+                        tableRowsHTML += `<td style="width:10%; vertical-align:top;" rowspan="${janSpan}">${waitingHtml}</td>`;
                     }
 
                     tableRowsHTML += `</tr>`;
@@ -645,6 +857,12 @@
         let baseFilteredRows = rowsData.filter(row => isAllDownload ? true : selectedZones.has(row.zone));
         let filteredExcelRows = getGroupedRows(baseFilteredRows);
 
+        // [v1.3.0] 엑셀이 문자열을 날짜/숫자로 자동 변환하지 않도록 하는 서식
+        // (예: 로케이션 "H1-1-1" → 平成1年1月1日 → "S64.1.1"로 바뀌던 문제)
+        const TEXT_FMT = `mso-number-format:'\\@';`;
+        // [v1.3.0] 셀 안에서 줄바꿈 (다음 셀로 넘어가지 않도록)
+        const CELL_BR = '<br style="mso-data-placement:same-cell;">';
+
         let i = 0;
         while (i < filteredExcelRows.length) {
             let locSpan = 0;
@@ -656,9 +874,11 @@
             while (l < locSpan) {
                 let janSpan = 0;
                 let totalQty = 0;
+                let waitingQty = 0;
 
                 while (l + janSpan < locSpan && filteredExcelRows[i + l].janCode === filteredExcelRows[i + l + janSpan].janCode) {
                     totalQty += filteredExcelRows[i + l + janSpan].quantity;
+                    waitingQty += filteredExcelRows[i + l + janSpan].waitingQty || 0;
                     janSpan++;
                 }
 
@@ -670,25 +890,38 @@
                     }
 
                     let excelJanStr = formatJanCodeExcel(row.janCode, row.productName);
+                    const clientCell = buildClientCell(row, CELL_BR);
 
                     excelRowsHTML += `<tr>`;
-                    excelRowsHTML += `<td style="${borderStyle}">${row.clientName}</td>`;
-                    excelRowsHTML += `<td style="${borderStyle}">${row.productName || '-'}</td>`;
+                    excelRowsHTML += `<td style="${borderStyle} ${TEXT_FMT} white-space:normal;" x:str>${clientCell}</td>`;
+                    excelRowsHTML += `<td style="${borderStyle} ${TEXT_FMT}" x:str>${escapeHtml(row.productName || '-')}</td>`;
 
                     if (l === 0 && k === 0) {
-                        excelRowsHTML += `<td style="font-weight:bold; ${borderStyle}" rowspan="${locSpan}">${row.location}</td>`;
+                        excelRowsHTML += `<td style="font-weight:bold; ${borderStyle} ${TEXT_FMT}" x:str rowspan="${locSpan}">${escapeHtml(row.location)}</td>`;
                     }
 
                     if (k === 0) {
+                        const remarkStyle = borderStyle.replace('vertical-align:middle;', 'vertical-align:top;');
+                        const waitingText = waitingQty > 0 ? `<b style="color:#d63031;">발송대기 ${waitingQty}</b>` : '';
                         excelRowsHTML += `<td style="${borderStyle} mso-number-format:'\\@';" x:str rowspan="${janSpan}">${excelJanStr}</td>`;
                         excelRowsHTML += `<td style="font-weight:bold; ${borderStyle}" rowspan="${janSpan}">${totalQty}</td>`;
-                        excelRowsHTML += `<td style="${borderStyle}" rowspan="${janSpan}"></td>`;
+                        excelRowsHTML += `<td style="${remarkStyle} ${TEXT_FMT}" x:str rowspan="${janSpan}">${waitingText}</td>`;
                     }
                     excelRowsHTML += `</tr>`;
                 }
                 l += janSpan;
             }
             i += locSpan;
+        }
+
+        // [v1.3.0] 엑셀 첫 줄: 데이터 수집 시각 + (있으면) 경고/검색 조건 안내
+        let infoRowsHTML = `<tr><td colspan="6" style="text-align:left; font-weight:bold; font-size:12pt; ${TEXT_FMT}" x:str>데이터 수집 시각: ${getCollectedAtText()}</td></tr>`;
+        getCollectWarnings().forEach(w => {
+            infoRowsHTML += `<tr><td colspan="6" style="text-align:left; font-weight:bold; color:#dc2626; ${TEXT_FMT}" x:str>⚠ ${escapeHtml(w)}</td></tr>`;
+        });
+        const filterNotice = getFilterNotice();
+        if (filterNotice) {
+            infoRowsHTML += `<tr><td colspan="6" style="text-align:left; font-weight:bold; color:#b45309; ${TEXT_FMT}" x:str>${escapeHtml(filterNotice)}</td></tr>`;
         }
 
         const excelTemplate = `
@@ -699,7 +932,7 @@
             </head>
             <body>
                 <table>
-                    <thead><tr><th>회원사명</th><th>상품명</th><th>로케이션</th><th>JAN CODE</th><th>수량</th><th>비고</th></tr></thead>
+                    <thead>${infoRowsHTML}<tr><th>회원사명</th><th>상품명</th><th>로케이션</th><th>JAN CODE</th><th>수량</th><th>비고</th></tr></thead>
                     <tbody>${excelRowsHTML}</tbody>
                 </table>
             </body>
@@ -720,10 +953,23 @@
     }
 
     async function runSimplifiedMode() {
+        // [v1.3.0] 검색 조건이 걸린 상태면 전체 재고로 출력할지 먼저 확인
+        const activeFilters = getActiveFilters();
+        let removeFilters = false;
+        if (activeFilters.length > 0) {
+            const filterText = activeFilters.map(f => `  - ${f.key} = ${f.value}`).join('\n');
+            removeFilters = confirm(
+                '현재 검색 조건이 적용된 상태입니다. 전체 재고로 출력할까요?\n\n' +
+                `${filterText}\n\n` +
+                '[확인] 검색 조건을 빼고 전체 재고 수집\n' +
+                '[취소] 현재 검색 조건 그대로 수집'
+            );
+        }
+
         const $mask = $('<div id="custom-sync-mask" style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(255,255,255,0.9); z-index:999999; display:flex; flex-direction:column; justify-content:center; align-items:center; font-family:sans-serif;"><div style="border:4px solid #f3f3f3; border-top:4px solid #007bff; border-radius:50%; width:40px; height:40px; animation:spin 1s linear infinite; margin-bottom:10px;"></div><div id="custom-sync-mask-text" style="font-weight:bold; color:#007bff;">📋 전체 페이지 수집 상태 분석 중...</div><style>@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }</style></div>');
         $('body').prepend($mask);
 
-        await collectAllPagesData();
+        await collectAllPagesData(removeFilters);
 
         $('#custom-sync-mask').remove();
         $('#layout-main-content').hide();
@@ -744,11 +990,22 @@
             zoneButtonsHTML += `<button type="button" class="filter-btn active" data-zone="${z}">${z === '기타' ? '기타 구역' : z + ' 구역'}</button>`;
         });
 
+        // [v1.3.0] 수집 시각 / 경고 / 검색 조건 안내 (화면 + 인쇄물 상단)
+        const warnings = getCollectWarnings();
+        const warningHTML = warnings.map(w => `<div class="collect-warning">⚠️ ${escapeHtml(w)}</div>`).join('');
+        const filterNotice = getFilterNotice();
+        const filterNoticeHTML = filterNotice ? `<div class="collect-notice">${escapeHtml(filterNotice)}</div>` : '';
+        const noLocationHTML = collectInfo.noLocationCount > 0
+            ? `<div class="collect-note">로케이션이 비어 있는 ${collectInfo.noLocationCount.toLocaleString()}행은 시트에서 제외됨</div>` : '';
+
         const containerHTML = `
             <div id="simplified-container">
                 <div class="tool-header">
                     <div class="header-main">
-                        <h2 class="tool-title">📋 구매대행 다나오로시(전체 재고조사) 리스트</h2>
+                        <div>
+                            <h2 class="tool-title">📋 구매대행 다나오로시(전체 재고조사) 리스트</h2>
+                            <div class="collect-meta">데이터 수집 시각: ${getCollectedAtText()}</div>
+                        </div>
                         <div class="tool-btn-group">
                             <button type="button" class="action-btn btn-zone-excel" id="simple-download-zone-excel">📥 선택 구역 Excel 다운로드</button>
                             <button type="button" class="action-btn btn-excel" id="simple-download-excel">📥 전체 Excel 다운로드</button>
@@ -756,7 +1013,10 @@
                             <button type="button" class="action-btn btn-restore" id="simple-trigger-restore">↩️ 원본 화면 복원</button>
                         </div>
                     </div>
-                    <div class="zone-filter-group">
+                    ${warningHTML}
+                    ${filterNoticeHTML}
+                    ${noLocationHTML}
+                    <div class="zone-filter-group" style="margin-top:12px;">
                         <span style="font-size:13px; font-weight:bold; color:#475569; align-self:center; margin-right:5px;">구역 필터 (다중 선택):</span>
                         ${zoneButtonsHTML}
                     </div>
@@ -765,11 +1025,11 @@
                     <thead>
                         <tr>
                             <th style="width: 23%;">회원사명</th>
-                            <th style="width: 32%;">상품명</th>
+                            <th style="width: 30%;">상품명</th>
                             <th style="width: 13%;">로케이션</th>
                             <th style="width: 18%;">JAN CODE</th>
                             <th style="width: 6%;">수량</th>
-                            <th style="width: 8%;">비고</th>
+                            <th style="width: 10%;">비고</th>
                         </tr>
                     </thead>
                     <tbody id="inventory-table-body">
@@ -781,6 +1041,13 @@
 
         $('body').prepend(containerHTML);
         window.scrollTo(0, 0);
+
+        // [v1.3.0] 수집 실패/건수 불일치가 있으면 화면 표시 후 알림
+        if (warnings.length > 0) {
+            setTimeout(() => {
+                alert('⚠️ 다나오로시 데이터 수집 경고\n\n' + warnings.join('\n') + '\n\n이 시트로 실사하면 일부 재고가 빠져 있을 수 있습니다. 다시 실행해 주세요.');
+            }, 100);
+        }
 
         $('.filter-btn').on('click', function() {
             const clickedZone = $(this).data('zone');
@@ -820,10 +1087,11 @@
             window.scrollTo(0, 0);
         });
 
+        // [v1.3.0] 파일명에 수집 시각(일본 시간, YYYY-MM-DD_HHmm) 표시
         $('#simple-download-excel').on('click', function() {
-            const today = new Date().toISOString().slice(0, 10);
+            const stamp = getFileStamp();
             const blob = generateExcelBlob(true);
-            triggerExcelDownload(blob, `다나오로시_전체재고통합_${today}.xls`);
+            triggerExcelDownload(blob, `다나오로시_전체재고통합_${stamp}.xls`);
         });
 
         $('#simple-download-zone-excel').on('click', function() {
@@ -831,10 +1099,10 @@
                 alert('선택된 구역이 없습니다. 구역 필터에서 다운로드할 구역을 선택해 주세요.');
                 return;
             }
-            const today = new Date().toISOString().slice(0, 10);
+            const stamp = getFileStamp();
             const zoneArray = Array.from(selectedZones).sort();
             const blob = generateExcelBlob(false);
-            triggerExcelDownload(blob, `다나오로시_선택구역재고_${zoneArray.join('+')}구역_${today}.xls`);
+            triggerExcelDownload(blob, `다나오로시_선택구역재고_${zoneArray.join('+')}구역_${stamp}.xls`);
         });
     }
 
