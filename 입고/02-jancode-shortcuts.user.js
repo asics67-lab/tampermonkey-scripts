@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] JAN코드 화면 단축키 통합 (JAN이동 + Enter이동 + F1/F2/F3 + 합계패널)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.0
+// @version      1.3.1
 // @description  jancode 페이지 통합본. 원본: A-1-9(JAN 검색이동) + A-1-6(Enter 행이동) + A-1-7(F3) + A-1-8(F1) + A-1-10(F2)
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/store/jancode*
@@ -41,6 +41,16 @@
  *      (드롭다운 목록 등)부터 찾아서 그 칸을, 없으면 입고 창 전체를 스크롤
  *   3) 숫자 칸 위에서 휠을 굴려도 수량 값은 바뀌지 않음 (기본 동작을 끄므로)
  *   4) [맨 아래 (F4)] / [맨 위] 버튼도 같은 방식으로 동작
+ *
+ * [v1.3.1 변경 사항] 입고 창 스크롤이 또 안 내려간다는 보고 (4번째)
+ * - 원인 1: 예전에 따로 만든 "03-jancode-scroll-fix" 스크립트가 같이 켜져 있으면
+ *   [맨 아래]/[맨 위] 버튼 클릭과 F4를 먼저 가로채서 이 스크립트의 스크롤을 막았음
+ *   → 03번은 v1.3.0에 이미 합쳐졌으므로 삭제해야 함.
+ * - 원인 2: 입고 창(#storeModal)이 아니라 그 안쪽 칸이나 페이지 전체가 실제 스크롤 영역인 경우,
+ *   창만 움직이려다 아무 일도 안 일어났음.
+ * - 수정: 후보(커서 아래 칸 → 입고 창 → 창 안쪽 칸들 → 페이지 전체)를 차례로 움직여 보고
+ *   "실제로 움직인 곳"이 나올 때까지 다음 후보로 넘어감. 버튼/F4/휠 모두 이 방식 사용.
+ *   03번 스크립트가 켜져 있으면 화면 왼쪽 아래에 빨간 안내를 띄움.
  */
 
 (function() {
@@ -74,9 +84,30 @@
         }
         modal.style.setProperty('overflow-y', 'auto', 'important');
         // 창 안쪽 칸들이 높이를 막아 둔 경우(overflow: hidden) 풀어 줌
-        modal.querySelectorAll('.modal-dialog, .modal-content').forEach(el => {
+        modal.querySelectorAll('.modal-dialog, .modal-content, .modal-body').forEach(el => {
             if (getComputedStyle(el).overflowY === 'hidden') el.style.setProperty('overflow', 'visible', 'important');
         });
+    }
+
+    /* [v1.3.1] 실제로 움직이는 스크롤 영역을 찾아서 움직임.
+     * 후보를 순서대로 시도해서 scrollTop이 실제로 바뀐 곳에서 멈춤. 움직였으면 true. */
+    function moveScroll(modal, dy, startEl) {
+        const list = [];
+        const add = (el) => { if (el && !list.includes(el)) list.push(el); };
+        for (let el = startEl; el && modal.contains(el) && el !== modal; el = el.parentElement) {
+            const oy = getComputedStyle(el).overflowY;
+            if ((oy === 'auto' || oy === 'scroll' || oy === 'overlay') && el.scrollHeight > el.clientHeight + 2) add(el);
+        }
+        add(modal);
+        modal.querySelectorAll('.modal-dialog, .modal-content, .modal-body').forEach(add);
+        add(document.scrollingElement || document.documentElement);
+        add(document.body);
+        for (const el of list) {
+            const before = el.scrollTop;
+            el.scrollTop = before + dy;
+            if (el.scrollTop !== before) return true;
+        }
+        return false;
     }
 
     /* [블록 1] A-1-9 — Enter: JAN 스캔 후 해당 행 수량 칸으로 커서 이동 */
@@ -297,6 +328,7 @@
             scrollBoxes(modal).forEach(el => { el.scrollTop = el.scrollHeight; });
             const last = lastVisibleEl(modal);
             if (last) last.scrollIntoView({ block: 'end' });
+            moveScroll(modal, 1e7, last);
             lastDir = 'bottom';
         }
         function goTop(modal) {
@@ -304,6 +336,7 @@
             scrollBoxes(modal).forEach(el => { el.scrollTop = 0; });
             const head = modal.querySelector('.modal-header, .modal-title') || modal.querySelector('.modal-content');
             if (head) head.scrollIntoView({ block: 'start' });
+            moveScroll(modal, -1e7, head);
             lastDir = 'top';
         }
         let lastDir = 'top';
@@ -385,17 +418,30 @@
             for (let el = t; el && el !== modal; el = el.parentElement) {
                 if (canScroll(el, dy)) { box = el; break; }
             }
-            if (!box) box = modal;
 
             e.preventDefault();
-            box.scrollTop += dy;
+            let moved = false;
+            if (box) { const b = box.scrollTop; box.scrollTop += dy; moved = box.scrollTop !== b; }
+            if (!moved) moved = moveScroll(modal, dy, t);
 
             if (!logged) {
                 logged = true;
-                console.log('[입고 스크롤 v1.3.0] 스크립트가 직접 스크롤:', box.id || box.className || box.tagName,
-                    'scrollHeight', box.scrollHeight, 'clientHeight', box.clientHeight);
+                console.log('[입고 스크롤 v1.3.1] 스크립트가 직접 스크롤, 움직임:', moved,
+                    'modal scrollHeight', modal.scrollHeight, 'clientHeight', modal.clientHeight);
             }
         }, { capture: true, passive: false });
     })();
+
+    /* [v1.3.1] 예전 03번 스크롤 스크립트가 같이 켜져 있으면 경고 (버튼/F4를 가로채서 충돌함) */
+    setTimeout(() => {
+        const dup = Array.from(document.querySelectorAll('style')).some(st =>
+            st.textContent.includes('.modal.show, .modal.in, .modal[style*="display: block"]'));
+        if (!dup || document.getElementById('tm-jan-dup-warn')) return;
+        const w = document.createElement('div');
+        w.id = 'tm-jan-dup-warn';
+        w.textContent = '⚠ 템퍼몽키에서 "[입고] JAN코드 화면 스크롤 수정" (03번) 스크립트를 삭제해 주세요. 스크롤 충돌 원인입니다.';
+        w.style.cssText = 'position:fixed;left:10px;bottom:10px;z-index:20001;background:#dc2626;color:#fff;padding:8px 12px;border-radius:8px;font-size:13px;font-weight:700;max-width:420px;';
+        document.body.appendChild(w);
+    }, 1500);
 
 })();
