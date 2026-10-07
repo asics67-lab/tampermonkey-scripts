@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.4.0
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시.
+// @version      1.5.0
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -46,6 +46,10 @@
  *    피킹리스트 상단에 "🔗 같은 Tracking 묶음" 박스로 출고번호·진행상태를 표시함.
  *  - 이번에 같이 인쇄되는 출고건은 [이번 출력] 표시, 현재 출고건은 "← 현재" 표시.
  *  - 로케이션/트래킹 칸의 트래킹번호 옆에도 "🔗 n건" 표시.
+ *
+ *  v1.5.0 (피킹리스트 일본어화)
+ *  - 인쇄창(피킹리스트)에 나오는 문구를 모두 일본어로 변경. 진행상태(출고 보류 등)도 일본어로 변환.
+ *  - 관리팀이 보는 사이트 화면 안내창(주의 회원사 등)은 그대로 한국어.
  * ============================================================
  */
 
@@ -367,16 +371,16 @@
         let subList = it.locations || it.location_details || it.stock_locations || it.locations_info;
         if (Array.isArray(subList) && subList.length > 0) {
             return subList.map(s => {
-                let lName = s.location || s.location_name || s.name || "미지정";
+                let lName = s.location || s.location_name || s.name || "未指定";
                 let lQty = s.qty || s.quantity || s.count || 1;
-                return `${lName} : ${lQty}개`;
+                return `${lName} : ${lQty}個`;
             }).join('<br>');
         }
 
         let rawLoc = String(it.location_str || it.location || it.location_name || "").trim();
 
-        if (/:\s*\d+개/.test(rawLoc)) {
-            return rawLoc.replace(/\|/g, '<br>').replace(/\s*\/\s*/g, '<br>');
+        if (/:\s*\d+(개|個)/.test(rawLoc)) {
+            return rawLoc.replace(/(\d+)\s*개/g, '$1個').replace(/\|/g, '<br>').replace(/\s*\/\s*/g, '<br>');
         }
 
         let locParts = rawLoc.split(/[\n|\/]+/).map(s => s.trim()).filter(Boolean);
@@ -384,17 +388,17 @@
         if (locParts.length > 1) {
             let qtyArr = it.location_qty || it.qtys || it.quantities;
             if (Array.isArray(qtyArr) && qtyArr.length === locParts.length) {
-                return locParts.map((loc, idx) => `${loc} : ${qtyArr[idx]}개`).join('<br>');
+                return locParts.map((loc, idx) => `${loc} : ${qtyArr[idx]}個`).join('<br>');
             }
 
             let remainQty = totalQty;
             let resultLines = [];
             for (let i = 0; i < locParts.length; i++) {
                 if (i === locParts.length - 1) {
-                    resultLines.push(`${locParts[i]} : ${remainQty}개`);
+                    resultLines.push(`${locParts[i]} : ${remainQty}個`);
                 } else {
                     let allocated = Math.max(1, Math.floor(totalQty / locParts.length));
-                    resultLines.push(`${locParts[i]} : ${allocated}개`);
+                    resultLines.push(`${locParts[i]} : ${allocated}個`);
                     remainQty -= allocated;
                 }
             }
@@ -402,10 +406,10 @@
         }
 
         if (locParts.length === 1 && locParts[0] !== "") {
-            return `${locParts[0]} : ${totalQty}개`;
+            return `${locParts[0]} : ${totalQty}個`;
         }
 
-        return "미지정";
+        return "未指定";
     }
 
     async function startApiHarvest(checkedBoxes) {
@@ -535,8 +539,8 @@
 
                     let reqSet = new Set();
                     const packingData = jsonData.packing || {};
-                    if (parseInt(packingData.no_inspection) === 1) reqSet.add("무검품 출하");
-                    if (parseInt(packingData.add_material) === 1) reqSet.add("완충재 추가");
+                    if (parseInt(packingData.no_inspection) === 1) reqSet.add("検品なし出荷");
+                    if (parseInt(packingData.add_material) === 1) reqSet.add("緩衝材追加");
 
                     ['put_sticker_str', 'remove_price_str', 'take_picture_str', 'seperate_str'].forEach(key => {
                         const val = jsonData[key];
@@ -634,7 +638,7 @@
         </style>`;
 
         printWin.document.write(`<html><head>${style}<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script></head><body>
-            <div class="no-print" style="position:fixed; top:10px; right:10px; z-index:1000;"><button onclick="window.print()" style="padding:4px 10px; background:#ff3e1d; color:white; border-radius:4px; font-weight:bold; border:none; cursor:pointer;">🖨️ 인쇄</button></div>
+            <div class="no-print" style="position:fixed; top:10px; right:10px; z-index:1000;"><button onclick="window.print()" style="padding:4px 10px; background:#ff3e1d; color:white; border-radius:4px; font-weight:bold; border:none; cursor:pointer;">🖨️ 印刷</button></div>
             <div id="content-area"></div>
             <script>
                 const groups = ${safeData};
@@ -642,7 +646,7 @@
                 const KUJI_LOCAL_KEY = 'kujiSetsLocal';
                 const KUJI_SHEET_INFO = ${safeSheetInfo};
                 if (KUJI_SHEET_INFO.error) {
-                    document.body.insertAdjacentHTML('afterbegin', '<div class="no-print" style="position:fixed; top:10px; left:10px; z-index:1000; background:#e69500; color:#fff; padding:6px 12px; border-radius:4px; font-weight:bold;">⚠ 쿠지 세트 시트를 읽지 못했습니다 (' + KUJI_SHEET_INFO.error + ') - 코드에 등록된 기준만 사용 중</div>');
+                    document.body.insertAdjacentHTML('afterbegin', '<div class="no-print" style="position:fixed; top:10px; left:10px; z-index:1000; background:#e69500; color:#fff; padding:6px 12px; border-radius:4px; font-weight:bold;">⚠ くじセット基準シートを読み込めませんでした (' + KUJI_SHEET_INFO.error + ') - コードに登録された基準のみ使用中</div>');
                 }
 
                 /* ---------- [v1.1.0] 아타리쿠지 세트수 계산 ---------- */
@@ -705,17 +709,17 @@
                         let body = '';
                         if (k.status === 'ok') {
                             cls = 'kuji-banner';
-                            body = '<span style="font-size:22px; color:#d00;">' + k.sets + '세트</span>' +
-                                   '<span style="font-size:12px; font-weight:normal; color:#444;">(-' + k.conf.grade + ' 기준 ' + k.conf.perSet + '개 = 1세트)</span>';
+                            body = '<span style="font-size:22px; color:#d00;">' + k.sets + 'セット</span>' +
+                                   '<span style="font-size:12px; font-weight:normal; color:#444;">(-' + k.conf.grade + ' 基準 ' + k.conf.perSet + '個 = 1セット)</span>';
                         } else if (k.status === 'odd') {
-                            body = '<span style="font-size:20px; color:#d00;">' + fmtSets(k.sets) + '세트 ⚠ 수량 확인</span>' +
-                                   '<span style="font-size:12px; font-weight:normal; color:#444;">(-' + k.conf.grade + ' 현재 ' + k.refQty + '개 / 1세트 ' + k.conf.perSet + '개)</span>';
+                            body = '<span style="font-size:20px; color:#d00;">' + fmtSets(k.sets) + 'セット ⚠ 数量確認</span>' +
+                                   '<span style="font-size:12px; font-weight:normal; color:#444;">(-' + k.conf.grade + ' 現在 ' + k.refQty + '個 / 1セット ' + k.conf.perSet + '個)</span>';
                         } else if (k.status === 'noref') {
-                            body = '<span>기준등급 -' + k.conf.grade + ' 이(가) 목록에 없음 → 세트수 확인 필요</span>';
+                            body = '<span>基準等級 -' + k.conf.grade + ' がリストにありません → セット数を確認してください</span>';
                         } else {
-                            body = '<span>세트 기준 미등록</span>' +
-                                   (KUJI_SHEET_INFO.editUrl ? '<a class="no-print kuji-reg" style="text-decoration:none;" target="_blank" href="' + KUJI_SHEET_INFO.editUrl + '">📋 시트에 등록하기</a>' : '') +
-                                   '<button class="no-print kuji-reg kuji-local" style="background:#6b7280;" data-base="' + base + '" data-grades="' + k.grades.join(',') + '">이 PC에 임시 등록</button>';
+                            body = '<span>セット基準 未登録</span>' +
+                                   (KUJI_SHEET_INFO.editUrl ? '<a class="no-print kuji-reg" style="text-decoration:none;" target="_blank" href="' + KUJI_SHEET_INFO.editUrl + '">📋 シートに登録</a>' : '') +
+                                   '<button class="no-print kuji-reg kuji-local" style="background:#6b7280;" data-base="' + base + '" data-grades="' + k.grades.join(',') + '">このPCに仮登録</button>';
                         }
                         return '<div class="' + cls + '"><span>🎯 ' + k.name + ' (' + base + ') :</span>' + body + '</div>';
                     }).join('');
@@ -726,16 +730,16 @@
                     if (!btn) return;
                     const base = btn.getAttribute('data-base');
                     const grades = btn.getAttribute('data-grades').split(',').map(g => '-' + g).join(', ');
-                    let grade = prompt('[' + base + '] 기준이 될 등급 번호를 입력하세요\\n(목록에 있는 등급: ' + grades + ')', '1');
+                    let grade = prompt('[' + base + '] 基準となる等級番号を入力してください\\n(リストにある等級: ' + grades + ')', '1');
                     if (!grade) return;
                     grade = grade.replace(/-/g, '').trim();
-                    const per = parseInt(prompt('-' + grade + ' 등급은 1세트에 몇 개입니까?', '2'), 10);
+                    const per = parseInt(prompt('-' + grade + ' 等級は1セットに何個ですか？', '2'), 10);
                     if (!per || per < 1) return;
                     try {
                         const local = JSON.parse(localStorage.getItem(KUJI_LOCAL_KEY) || '{}') || {};
                         local[base] = { grade: grade, perSet: per };
                         localStorage.setItem(KUJI_LOCAL_KEY, JSON.stringify(local));
-                    } catch (err) { alert('저장 실패: ' + err); return; }
+                    } catch (err) { alert('保存失敗: ' + err); return; }
                     renderAll();
                 });
                 /* ---------- [v1.1.0] 끝 ---------- */
@@ -750,21 +754,33 @@
                     st.list.forEach(t => {
                         const chips = t.orders.map(o => {
                             const isCur = o.deliveryNo === String(g.outNum).trim();
-                            const isDone = o.status.indexOf('완료') >= 0;
-                            const isHold = o.status.indexOf('보류') >= 0 || o.status.indexOf('취소') >= 0;
+                            const isDone = o.status.indexOf('완료') >= 0 || o.status.indexOf('完了') >= 0;
+                            const isHold = /보류|취소|保留|キャンセル/.test(o.status);
                             return '<span class="st-chip' + (isCur ? ' cur' : (isDone ? ' done' : '')) + '">' +
-                                escHtml(o.deliveryNo) + (isCur ? ' ← 현재' : '') +
-                                '<span class="st-stat' + (isHold ? ' hold' : '') + '">[' + escHtml(o.status) + ']</span>' +
-                                (!isCur && PRINTED_OUTS.has(o.deliveryNo) ? '<span class="st-here">이번 출력</span>' : '') +
+                                escHtml(o.deliveryNo) + (isCur ? ' ← 現在' : '') +
+                                '<span class="st-stat' + (isHold ? ' hold' : '') + '">[' + escHtml(jaStatus(o.status)) + ']</span>' +
+                                (!isCur && PRINTED_OUTS.has(o.deliveryNo) ? '<span class="st-here">今回出力</span>' : '') +
                                 '</span>';
                         }).join('');
-                        out += '<div class="st-box"><div class="st-title">🔗 같은 Tracking 묶음 출고건 ' + t.orders.length + '건 · Tracking No: ' + escHtml(t.trackingNo) + '</div>' +
+                        out += '<div class="st-box"><div class="st-title">🔗 同一Tracking番号の出荷件 ' + t.orders.length + '件 · Tracking No: ' + escHtml(t.trackingNo) + '</div>' +
                                '<div class="st-list">' + chips + '</div></div>';
                     });
                     if (st.error) {
-                        out += '<div class="no-print" style="background:#e69500; color:#fff; padding:4px 8px; margin-bottom:6px; font-weight:bold; font-size:12px;">⚠ 같은 Tracking 출고건 조회 실패 (' + escHtml(st.error) + ') - 포장화면에서 확인해 주세요</div>';
+                        out += '<div class="no-print" style="background:#e69500; color:#fff; padding:4px 8px; margin-bottom:6px; font-weight:bold; font-size:12px;">⚠ 同一Tracking出荷件の照会に失敗しました (' + escHtml(st.error) + ') - 梱包画面で確認してください</div>';
                     }
                     return out;
+                }
+
+                // 진행상태 한국어 → 일본어 (띄어쓰기 무시하고 비교, 모르는 상태는 그대로 표시)
+                const STATUS_JA = {
+                    '접수': '受付', '입고대기': '入庫待ち', '입고완료': '入庫完了', '검수완료': '検品完了',
+                    '포장대기': '梱包待ち', '포장진행': '梱包進行', '포장완료': '梱包完了',
+                    '출고요청': '出荷依頼', '출고대기': '出荷待ち', '출고보류': '出荷保留', '출고완료': '出荷完了',
+                    '보류': '保留', '취소': 'キャンセル', '배송중': '配送中', '배송완료': '配送完了'
+                };
+                function jaStatus(s) {
+                    const k = String(s || '').replace(/\\s+/g, '');
+                    return STATUS_JA[k] || s;
                 }
 
                 function sameTrackingCount(g, trackingNo) {
@@ -867,17 +883,17 @@
                             qtyTdHtml = '<td style="border:1.5px solid #000; text-align:center; vertical-align:middle; padding:2px 0;">' +
                                 '<div style="font-size:26px; color:red; font-weight:900; line-height:1;">' + it.qty + '</div>' +
                                 '<div style="font-size:11px; color:#1565c0; font-weight:900; margin-top:1px;">×' + it.pcs + 'pcs</div>' +
-                                (it.qty > 1 ? '<div style="font-size:11px; color:#1565c0; font-weight:900;">=' + (it.qty * it.pcs) + '개</div>' : '') +
+                                (it.qty > 1 ? '<div style="font-size:11px; color:#1565c0; font-weight:900;">=' + (it.qty * it.pcs) + '個</div>' : '') +
                                 '</td>';
                         } else if (it.isHalf) {
-                            janHtml += '<div style="font-size:12px; color:#fff; background:#e69500; font-weight:900; letter-spacing:0; margin-top:2px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">반박스 · 개수는 포장화면 옵션 확인</div>';
+                            janHtml += '<div style="font-size:12px; color:#fff; background:#e69500; font-weight:900; letter-spacing:0; margin-top:2px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">ハーフ · 個数は梱包画面のオプションを確認</div>';
                         }
 
                         let locContent = '<div style="font-weight:900; font-size:14px; line-height:1.3; text-align:center;">' + it.location + '</div>';
                         if (it.tracking) {
                             const stCnt = sameTrackingCount(g, it.tracking);
                             locContent += '<div style="font-size:12px; color:#3b82f6; font-weight:bold; margin-top:3px; text-align:center;">' + it.tracking + '</div>' +
-                                (stCnt >= 2 ? '<div style="font-size:11px; color:#fff; background:#7b1fa2; font-weight:900; margin-top:2px; border-radius:3px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">🔗 같은 Tracking ' + stCnt + '건</div>' : '');
+                                (stCnt >= 2 ? '<div style="font-size:11px; color:#fff; background:#7b1fa2; font-weight:900; margin-top:2px; border-radius:3px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">🔗 同一Tracking ' + stCnt + '件</div>' : '');
                         }
 
                         rows += '<tr ' + rowStyle + '>' +
@@ -892,7 +908,7 @@
                     });
 
                     const reqString = g.requests.length > 0 ? '🚩 ' + g.requests.join(' / ') : '';
-                    const oceanLabel = g.isOcean ? '<div style="color:#007bff; font-weight:900; font-size:22px; margin-left:20px; border:3px solid #007bff; padding:2px 10px; border-radius:5px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">해운(OCEAN)</div>' : '';
+                    const oceanLabel = g.isOcean ? '<div style="color:#007bff; font-weight:900; font-size:22px; margin-left:20px; border:3px solid #007bff; padding:2px 10px; border-radius:5px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">海運(OCEAN)</div>' : '';
                     const watermarkHtml = g.isOcean ? '<div class="watermark-overlay"></div>' : '';
 
                     html += '<div class="sheet ' + (g.isOcean ? 'is-ocean' : '') + '">' +
@@ -913,7 +929,7 @@
                                             '<div style="font-size:16px; font-weight:bold; color:#ff3e1d;">[ '+g.pageNum+' / '+g.totalPage+' ]</div>' +
                                             '<div style="display:flex; align-items:stretch; gap:10px;">' +
                                                 '<div style="border:1px solid #000; width:125px; height:45px; display:flex; flex-direction:column;">' +
-                                                    '<div style="font-size:9px; font-weight:bold; text-align:center; border-bottom:1px solid #000; background:#f4f4f4;">피킹 담당자</div><div style="flex:1;"></div>' +
+                                                    '<div style="font-size:9px; font-weight:bold; text-align:center; border-bottom:1px solid #000; background:#f4f4f4;">ピッキング担当者</div><div style="flex:1;"></div>' +
                                                 '</div>' +
                                                 '<div id="qr-'+idx+'"></div>' +
                                             '</div>' +
@@ -928,7 +944,7 @@
                                     '<table style="width:100%; border-collapse:collapse; table-layout:fixed; border:2px solid #000;">' +
                                         '<thead style="background:#e8e8e8; font-size:13px; font-weight:bold;">' +
                                             '<tr style="height:35px;">' +
-                                                '<th width="35" style="border:1.5px solid #000;">No</th><th width="65" style="border:1.5px solid #000;">이미지</th><th width="auto" style="border:1.5px solid #000;">상품명</th><th width="180" style="border:1.5px solid #000;">JANCODE</th><th width="50" style="border:1.5px solid #000;">수량</th><th width="140" style="border:1.5px solid #000;">로케이션 / 트래킹</th><th width="35" style="border:1.5px solid #000;">V</th>' +
+                                                '<th width="35" style="border:1.5px solid #000;">No</th><th width="65" style="border:1.5px solid #000;">画像</th><th width="auto" style="border:1.5px solid #000;">商品名</th><th width="180" style="border:1.5px solid #000;">JANCODE</th><th width="50" style="border:1.5px solid #000;">数量</th><th width="140" style="border:1.5px solid #000;">ロケ / トラッキング</th><th width="35" style="border:1.5px solid #000;">V</th>' +
                                             '</tr>' +
                                         '</thead>' +
                                         '<tbody>'+rows+'</tbody>' +
