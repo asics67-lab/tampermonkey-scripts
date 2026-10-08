@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.7.0
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행).
+// @version      1.8.0
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금).
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -315,6 +315,25 @@
     // 예전에는 "같은 Tracking 출고건" 과 "무검품출하 확인" 이 같은 검색을 각각 따로 해서
     // Tracking 1개당 무거운 검색이 2번씩 나갔음 → 결과(HTML)를 3분간 공유해서 1번만 요청.
     const mgtHtmlCache = new Map();   // trackingNo → { at, promise }
+
+    // [v1.8.0] 종합관리 검색은 1건에 1~2초 걸리는 무거운 검색이라, 한꺼번에 너무 많이 보내면
+    // 서버가 오히려 느려짐(실측) → 동시에 최대 4건까지만 보냄
+    const MGT_MAX_PARALLEL = 4;
+    let mgtActive = 0;
+    const mgtWaiting = [];
+    function withMgtSlot(fn) {
+        return new Promise((resolve, reject) => {
+            const run = () => {
+                mgtActive++;
+                Promise.resolve().then(fn).then(resolve, reject).finally(() => {
+                    mgtActive--;
+                    const next = mgtWaiting.shift();
+                    if (next) next();
+                });
+            };
+            if (mgtActive < MGT_MAX_PARALLEL) run(); else mgtWaiting.push(run);
+        });
+    }
     function getMgtHtml(trackingNo) {
         const c = mgtHtmlCache.get(trackingNo);
         if (c && Date.now() - c.at < 3 * 60 * 1000) return c.promise;
@@ -322,11 +341,18 @@
         url.searchParams.set('action', 'search');
         url.searchParams.set('tracking_no', trackingNo);
         url.searchParams.set('pagesize', '500');
-        const promise = fetch(url.toString(), { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-            .then(res => {
-                if (!res.ok) throw new Error('総合管理 HTTP ' + res.status);
-                return res.text();
-            });
+        const promise = withMgtSlot(() => {
+            // [v1.8.0] 서버가 응답이 없을 때 피킹리스트가 계속 멈춰 있지 않도록 20초 제한
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 20000);
+            return fetch(url.toString(), { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' }, signal: ctrl.signal })
+                .then(res => {
+                    if (!res.ok) throw new Error('総合管理 HTTP ' + res.status);
+                    return res.text();
+                })
+                .catch(e => { throw (e && e.name === 'AbortError') ? new Error('総合管理 応答なし(20秒)') : e; })
+                .finally(() => clearTimeout(timer));
+        });
         promise.catch(() => mgtHtmlCache.delete(trackingNo));
         mgtHtmlCache.set(trackingNo, { at: Date.now(), promise: promise });
         return promise;
@@ -596,6 +622,7 @@
     async function startApiHarvest(checkedBoxes) {
         showOverlay(`🚀 데이터를 수집하여 이중 정렬 가공 중...`);
         const collectedGroups = [];
+        const checkTasks = [];   // [v1.8.0] 나중에 할 LH/OH 확인 목록
         const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
         // [v1.7.0] 쿠지 세트시트는 처음부터 같이 읽어 둠(마지막에 기다리지 않도록)
         const kujiSheetPromise = loadKujiSheet();
@@ -603,8 +630,9 @@
         let doneCount = 0;
         showOverlay(`🚀 데이터를 수집하여 이중 정렬 가공 중... (0 / ${boxList.length})`);
 
-        // [v1.7.0] 출고건을 하나씩 기다리지 않고 3건씩 동시에 조회 (순서는 originalIndex로 유지)
-        await runLimited(boxList, 3, async (box, i) => {
+        // [v1.7.0] 출고건을 하나씩 기다리지 않고 동시에 조회 (순서는 originalIndex로 유지)
+        // [v1.8.0] 포장 데이터 조회는 가벼워서 6건씩 (실측 20건 약 1.3초)
+        await runLimited(boxList, 6, async (box, i) => {
             const tr = box.closest('tr');
             const shippingMethodText = tr ? tr.querySelector('td:nth-child(3)')?.innerText.toUpperCase() || "" : "";
             const isOcean = shippingMethodText.includes("OCEAN");
@@ -744,21 +772,16 @@
                     // [v1.6.0] 무검품출하 표시 (현재 출고건 여부 + Tracking별 무검품출하 출고요청)
                     const isNoInspection = parseInt(packingData.no_inspection) === 1;
                     let noInsp = { list: [], error: '', current: isNoInspection };
+                    let checkPending = false;
                     if (DELIVERY_NO_PATTERN.test(task.outNum) && (task.type.includes('delivery') || tr?.innerText.includes('배송대행') || tr?.innerText.includes('배송 대행'))) {
                         const tSet = new Set();
                         if (task.rowTracking) tSet.add(task.rowTracking);
                         processedItems.forEach(it => { if (it.tracking) tSet.add(it.tracking); });
                         if (tSet.size > 0) {
-                            // [v1.7.0] 두 조회를 동시에 실행 (종합관리 검색 결과는 공유되어 1번만 요청됨)
-                            const tArr = Array.from(tSet);
-                            const [st, ni] = await Promise.all([
-                                findSameTrackingOrders(tArr),
-                                NoInsp.check(tArr, { id: task.id, deliveryNo: task.outNum, noInspection: isNoInspection })
-                                    .then(r => ({ list: r.list.filter(t => t.duplicate || t.blocked), error: r.error, current: isNoInspection }))
-                                    .catch(e => ({ list: [], error: String(e.message || e), current: isNoInspection }))
-                            ]);
-                            sameTracking = st;
-                            noInsp = ni;
+                            // [v1.8.0] 이 확인(종합관리 검색)이 전체 시간의 대부분이라
+                            // 여기서 기다리지 않고, 피킹리스트를 먼저 띄운 뒤 나중에 채워 넣음
+                            checkPending = true;
+                            checkTasks.push({ id: task.id, outNum: task.outNum, tArr: Array.from(tSet), isNoInspection: isNoInspection });
                         }
                     }
 
@@ -770,6 +793,7 @@
                             isOcean: task.isOcean,
                             sameTracking: sameTracking,
                             noInsp: noInsp,
+                            checkPending: checkPending,
                             items: processedItems.slice(p * ITEMS_PER_PAGE, (p + 1) * ITEMS_PER_PAGE),
                             pageNum: p + 1, totalPage: Math.ceil(processedItems.length / ITEMS_PER_PAGE),
                             originalIndex: task.originalIndex
@@ -790,9 +814,30 @@
             });
 
             const kujiSheet = await kujiSheetPromise;
-            openPrintWindow(collectedGroups, kujiSheet);
+            const printWin = openPrintWindow(collectedGroups, kujiSheet, checkTasks.length);
+            document.getElementById('harvest-overlay')?.remove();
+            if (printWin && checkTasks.length > 0) runDeferredChecks(printWin, checkTasks);
         }
         document.getElementById('harvest-overlay')?.remove();
+    }
+
+    // [v1.8.0] 피킹리스트를 띄운 뒤, LH/OH 건의 같은 Tracking·무검품출하 확인을 이어서 진행하고
+    // 끝나는 대로 인쇄 창에 채워 넣음 (확인이 다 끝날 때까지 인쇄 버튼은 "確認中" 으로 잠김)
+    async function runDeferredChecks(printWin, checkTasks) {
+        await runLimited(checkTasks, 3, async (t) => {
+            if (printWin.closed) return;
+            const [st, ni] = await Promise.all([
+                findSameTrackingOrders(t.tArr),
+                NoInsp.check(t.tArr, { id: t.id, deliveryNo: t.outNum, noInspection: t.isNoInspection })
+                    .then(r => ({ list: r.list.filter(x => x.duplicate || x.blocked), error: r.error, current: t.isNoInspection }))
+                    .catch(e => ({ list: [], error: String(e.message || e), current: t.isNoInspection }))
+            ]);
+            try {
+                if (!printWin.closed && typeof printWin.applyCheck === 'function') {
+                    printWin.applyCheck(JSON.stringify({ outNum: t.outNum, sameTracking: st, noInsp: ni }));
+                }
+            } catch (e) { console.error('[피킹리스트] 확인 결과 반영 실패', e); }
+        });
     }
 
     function showOverlay(msg) {
@@ -805,9 +850,10 @@
         overlay.innerText = msg;
     }
 
-    function openPrintWindow(groups, kujiSheet) {
+    function openPrintWindow(groups, kujiSheet, pendingChecks) {
         const printWin = window.open('', '_blank');
-        if(!printWin) return;
+        if(!printWin) return null;
+        pendingChecks = pendingChecks || 0;
         kujiSheet = kujiSheet || { sets: {}, error: '' };
         const toSafe = (obj) => JSON.stringify(obj).replace(/[\u007F-￿]/g, chr => "\\u" + ("0000" + chr.charCodeAt(0).toString(16)).substr(-4));
         const safeData = toSafe(groups);
@@ -841,7 +887,7 @@
         </style>`;
 
         printWin.document.write(`<html><head>${style}<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script></head><body>
-            <div class="no-print" style="position:fixed; top:10px; right:10px; z-index:1000;"><button onclick="window.print()" style="padding:4px 10px; background:#ff3e1d; color:white; border-radius:4px; font-weight:bold; border:none; cursor:pointer;">🖨️ 印刷</button></div>
+            <div class="no-print" style="position:fixed; top:10px; right:10px; z-index:1000;"><button id="print-btn" onclick="window.print()" style="padding:4px 10px; background:#ff3e1d; color:white; border-radius:4px; font-weight:bold; border:none; cursor:pointer;">🖨️ 印刷</button></div>
             <div id="content-area"></div>
             <script>
                 const groups = ${safeData};
@@ -952,6 +998,9 @@
                 function escHtml(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
                 function sameTrackingHtml(g) {
+                    if (g.checkPending) {
+                        return '<div class="no-print" style="border:2px dashed #7b1fa2; background:#f8f0fc; color:#7b1fa2; padding:5px 8px; margin:0 0 8px 0; font-weight:bold; font-size:12px;">🔄 同一Tracking・無検品出荷を確認中…</div>';
+                    }
                     const st = g.sameTracking || { list: [], error: '' };
                     let out = '';
                     st.list.forEach(t => {
@@ -1204,9 +1253,51 @@
                 }
 
                 renderAll();
+
+                /* ---------- [v1.8.0] 나중에 끝나는 LH/OH 확인 결과 채워 넣기 ---------- */
+                let checksTotal = ${pendingChecks};
+                let checksDone = 0;
+                let renderTimer = null;
+                function updatePrintBtn() {
+                    const b = document.getElementById('print-btn');
+                    if (!b) return;
+                    const busy = checksDone < checksTotal;
+                    b.disabled = busy;
+                    b.style.background = busy ? '#999' : '#ff3e1d';
+                    b.style.cursor = busy ? 'wait' : 'pointer';
+                    b.textContent = busy ? '⏳ 確認中 (' + checksDone + ' / ' + checksTotal + ')' : '🖨️ 印刷';
+                }
+                window.applyCheck = function (json) {
+                    const r = JSON.parse(json);
+                    groups.forEach(g => {
+                        if (g.outNum !== r.outNum) return;
+                        g.sameTracking = r.sameTracking;
+                        g.noInsp = r.noInsp;
+                        g.checkPending = false;
+                    });
+                    checksDone++;
+                    updatePrintBtn();
+                    // 결과가 여러 개 연달아 와도 화면은 잠깐 모아서 한 번만 다시 그림
+                    clearTimeout(renderTimer);
+                    renderTimer = setTimeout(renderAll, checksDone >= checksTotal ? 0 : 400);
+                };
+                updatePrintBtn();
+                // 혹시 확인이 끝나지 않아도 60초 뒤에는 인쇄할 수 있게 풀어 둠
+                setTimeout(() => {
+                    if (checksDone >= checksTotal) return;
+                    checksDone = checksTotal;
+                    groups.forEach(g => {
+                        if (!g.checkPending) return;
+                        g.checkPending = false;
+                        g.sameTracking = { list: [], error: '時間切れ' };
+                    });
+                    updatePrintBtn();
+                    renderAll();
+                }, 60000);
             </script>
         </body></html>`);
         printWin.document.close();
+        return printWin;
     }
 
     setInterval(injectCustomButton, 500);
