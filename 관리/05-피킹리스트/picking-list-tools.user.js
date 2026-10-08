@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.6.1
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만.
+// @version      1.7.0
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행).
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -311,6 +311,41 @@
     const DELIVERY_NO_PATTERN = /^(LH|OH)/i;
     const mgtCache = new Map();
 
+    // [v1.7.0] 종합관리 Tracking 검색 공용 함수.
+    // 예전에는 "같은 Tracking 출고건" 과 "무검품출하 확인" 이 같은 검색을 각각 따로 해서
+    // Tracking 1개당 무거운 검색이 2번씩 나갔음 → 결과(HTML)를 3분간 공유해서 1번만 요청.
+    const mgtHtmlCache = new Map();   // trackingNo → { at, promise }
+    function getMgtHtml(trackingNo) {
+        const c = mgtHtmlCache.get(trackingNo);
+        if (c && Date.now() - c.at < 3 * 60 * 1000) return c.promise;
+        const url = new URL(location.origin + '/admin/mgt/index');
+        url.searchParams.set('action', 'search');
+        url.searchParams.set('tracking_no', trackingNo);
+        url.searchParams.set('pagesize', '500');
+        const promise = fetch(url.toString(), { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(res => {
+                if (!res.ok) throw new Error('総合管理 HTTP ' + res.status);
+                return res.text();
+            });
+        promise.catch(() => mgtHtmlCache.delete(trackingNo));
+        mgtHtmlCache.set(trackingNo, { at: Date.now(), promise: promise });
+        return promise;
+    }
+
+    // [v1.7.0] 여러 작업을 정해진 개수만큼 동시에 실행
+    async function runLimited(list, limit, fn) {
+        const out = new Array(list.length);
+        let i = 0;
+        const worker = async () => {
+            while (i < list.length) {
+                const k = i++;
+                out[k] = await fn(list[k], k);
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(limit, list.length) }, worker));
+        return out;
+    }
+
     function cellText(el) {
         return (el?.textContent || '').replace(/\s+/g, ' ').trim();
     }
@@ -350,31 +385,26 @@
 
     async function fetchMgtByTracking(trackingNo) {
         if (mgtCache.has(trackingNo)) return mgtCache.get(trackingNo);
-        const url = new URL(location.origin + '/admin/mgt/index');
-        url.searchParams.set('action', 'search');
-        url.searchParams.set('tracking_no', trackingNo);
-        url.searchParams.set('pagesize', '500');
-        const res = await fetch(url.toString(), { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = parseMgtHtml(await res.text(), trackingNo);
+        const data = parseMgtHtml(await getMgtHtml(trackingNo), trackingNo);
         mgtCache.set(trackingNo, data);
         return data;
     }
 
     // 결과: { list: [{trackingNo, orders:[...] }], error: '' }  (2건 이상 묶인 것만)
     async function findSameTrackingOrders(trackingNos) {
-        const list = [];
         let error = '';
-        for (const t of trackingNos) {
+        // [v1.7.0] 하나씩 순서대로 → 3개씩 동시에 조회
+        const results = await runLimited(trackingNos, 3, async (t) => {
             try {
                 const orders = await fetchMgtByTracking(t);
-                if (orders.length >= 2) list.push({ trackingNo: t, orders: orders });
+                return orders.length >= 2 ? { trackingNo: t, orders: orders } : null;
             } catch (e) {
                 console.error('[피킹리스트] 같은 Tracking 조회 실패', t, e);
                 error = String(e.message || e);
+                return null;
             }
-        }
-        return { list: list, error: error };
+        });
+        return { list: results.filter(Boolean), error: error };
     }
 
     /* ==========================================================
@@ -405,13 +435,8 @@
         async function searchByTracking(trackingNo) {
             const c = searchCache.get(trackingNo);
             if (fresh(c)) return c.data;
-            const url = new URL(location.origin + '/admin/mgt/index');
-            url.searchParams.set('action', 'search');
-            url.searchParams.set('tracking_no', trackingNo);
-            url.searchParams.set('pagesize', '500');
-            const res = await fetch(url.toString(), { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
-            if (!res.ok) throw new Error('総合管理 HTTP ' + res.status);
-            const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+            // [v1.7.0] 같은 Tracking 출고건 조회와 검색 결과 공유 (중복 요청 제거)
+            const doc = new DOMParser().parseFromString(await getMgtHtml(trackingNo), 'text/html');
             const data = [];
             const seen = new Set();
             doc.querySelectorAll('table.table-bordered tbody tr').forEach((row) => {
@@ -572,9 +597,14 @@
         showOverlay(`🚀 데이터를 수집하여 이중 정렬 가공 중...`);
         const collectedGroups = [];
         const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+        // [v1.7.0] 쿠지 세트시트는 처음부터 같이 읽어 둠(마지막에 기다리지 않도록)
+        const kujiSheetPromise = loadKujiSheet();
+        const boxList = Array.from(checkedBoxes);
+        let doneCount = 0;
+        showOverlay(`🚀 데이터를 수집하여 이중 정렬 가공 중... (0 / ${boxList.length})`);
 
-        for (let i = 0; i < checkedBoxes.length; i++) {
-            const box = checkedBoxes[i];
+        // [v1.7.0] 출고건을 하나씩 기다리지 않고 3건씩 동시에 조회 (순서는 originalIndex로 유지)
+        await runLimited(boxList, 3, async (box, i) => {
             const tr = box.closest('tr');
             const shippingMethodText = tr ? tr.querySelector('td:nth-child(3)')?.innerText.toUpperCase() || "" : "";
             const isOcean = shippingMethodText.includes("OCEAN");
@@ -589,8 +619,6 @@
                 rowTracking: extractRowTrackingNo(tr),
                 originalIndex: i
             };
-            showOverlay(`🚀 데이터를 수집하여 이중 정렬 가공 중... (${i + 1} / ${checkedBoxes.length})`);
-
             try {
                 const formData = new FormData();
                 formData.append('id', task.id);
@@ -721,13 +749,16 @@
                         if (task.rowTracking) tSet.add(task.rowTracking);
                         processedItems.forEach(it => { if (it.tracking) tSet.add(it.tracking); });
                         if (tSet.size > 0) {
-                            sameTracking = await findSameTrackingOrders(Array.from(tSet));
-                            try {
-                                const r = await NoInsp.check(Array.from(tSet), { id: task.id, deliveryNo: task.outNum, noInspection: isNoInspection });
-                                noInsp = { list: r.list.filter(t => t.duplicate || t.blocked), error: r.error, current: isNoInspection };
-                            } catch (e) {
-                                noInsp.error = String(e.message || e);
-                            }
+                            // [v1.7.0] 두 조회를 동시에 실행 (종합관리 검색 결과는 공유되어 1번만 요청됨)
+                            const tArr = Array.from(tSet);
+                            const [st, ni] = await Promise.all([
+                                findSameTrackingOrders(tArr),
+                                NoInsp.check(tArr, { id: task.id, deliveryNo: task.outNum, noInspection: isNoInspection })
+                                    .then(r => ({ list: r.list.filter(t => t.duplicate || t.blocked), error: r.error, current: isNoInspection }))
+                                    .catch(e => ({ list: [], error: String(e.message || e), current: isNoInspection }))
+                            ]);
+                            sameTracking = st;
+                            noInsp = ni;
                         }
                     }
 
@@ -746,7 +777,9 @@
                     }
                 }
             } catch (e) { console.error(e); }
-        }
+            doneCount++;
+            showOverlay(`🚀 데이터를 수집하여 이중 정렬 가공 중... (${doneCount} / ${boxList.length})`);
+        });
 
         if (collectedGroups.length > 0) {
             collectedGroups.sort((a, b) => {
@@ -756,7 +789,7 @@
                 return a.pageNum - b.pageNum;
             });
 
-            const kujiSheet = await loadKujiSheet();
+            const kujiSheet = await kujiSheetPromise;
             openPrintWindow(collectedGroups, kujiSheet);
         }
         document.getElementById('harvest-overlay')?.remove();
