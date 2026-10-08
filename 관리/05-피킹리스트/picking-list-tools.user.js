@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.6.0
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시.
+// @version      1.6.1
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -58,6 +58,10 @@
  *    로케이션/트래킹 칸에 "⚠ 無検品" 배지를 표시.
  *  - 같은 Tracking에 무검품출하 출고요청이 2건 이상이면 "⛔ 進行不可(管理者確認)" 로 표시.
  *    (포장 스크립트 packing-tools v1.5.0 의 팝업과 같은 기준)
+ *
+ *  v1.6.1 (요청: "중복되는 경우에만")
+ *  - 상단 박스·로케이션 배지는 무검품출하 Tracking이 다른 출고요청에도 들어가 있을 때(중복)만 표시.
+ *    제목 옆 "無検品出荷" 라벨은 무검품출하 출고건이면 그대로 표시.
  * ============================================================
  */
 
@@ -474,6 +478,7 @@
          * current: { id, deliveryNo, noInspection } (현재 출고건. 없으면 null)
          * 결과: { list: [{ trackingNo, orders, noInspOrders, blocked }], error }
          *   - list 에는 무검품출하 출고요청이 1건 이상 걸린 Tracking만 들어갑니다.
+         *   - duplicate: 그 Tracking이 2건 이상의 출고요청에 들어가 있음(중복)
          *   - orders: 그 Tracking이 들어간 출고요청 전체(취소 제외), noInspection/isCurrent 표시
          */
         async function check(trackingNos, current) {
@@ -504,7 +509,7 @@
                     orders.sort((a, b) => (b.isCurrent - a.isCurrent) || b.deliveryNo.localeCompare(a.deliveryNo));
                     const noInspOrders = orders.filter((o) => o.noInspection);
                     if (noInspOrders.length === 0) return null;
-                    return { trackingNo: trackingNo, orders: orders, noInspOrders: noInspOrders, blocked: noInspOrders.length >= BLOCK_MIN_COUNT };
+                    return { trackingNo: trackingNo, orders: orders, noInspOrders: noInspOrders, blocked: noInspOrders.length >= BLOCK_MIN_COUNT, duplicate: orders.length >= 2 };
                 } catch (e) {
                     errors.push(trackingNo + ': ' + (e.message || e));
                     return null;
@@ -719,7 +724,7 @@
                             sameTracking = await findSameTrackingOrders(Array.from(tSet));
                             try {
                                 const r = await NoInsp.check(Array.from(tSet), { id: task.id, deliveryNo: task.outNum, noInspection: isNoInspection });
-                                noInsp = { list: r.list, error: r.error, current: isNoInspection };
+                                noInsp = { list: r.list.filter(t => t.duplicate || t.blocked), error: r.error, current: isNoInspection };
                             } catch (e) {
                                 noInsp.error = String(e.message || e);
                             }
@@ -974,7 +979,7 @@
                                 (o.noInspection ? ' 無検品' : '') + '</span>';
                         }).join('');
                         out += '<div class="ni-box' + (t.blocked ? ' block' : '') + '"><div class="st-title">' +
-                            (t.blocked ? '⛔ 無検品出荷の依頼 ' + t.noInspOrders.length + '件 · 進行不可（管理者確認）' : '⚠ 無検品出荷の依頼に含まれるTracking') +
+                            (t.blocked ? '⛔ 無検品出荷の依頼 ' + t.noInspOrders.length + '件 · 進行不可（管理者確認）' : '⚠ 無検品出荷Trackingが別の出荷件と重複') +
                             ' · Tracking No: ' + t.trackingNos.map(escHtml).join(', ') + '</div>' +
                             '<div class="st-list">' + chips + '</div></div>';
                     });
@@ -1099,7 +1104,7 @@
                             const niT = noInspOf(g, it.tracking);
                             if (niT) {
                                 locContent += '<div style="font-size:11px; color:#fff; background:' + (niT.blocked ? '#c62828' : '#e65100') + '; font-weight:900; margin-top:2px; border-radius:3px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">' +
-                                    (niT.blocked ? '⛔ 無検品 ' + niT.noInspOrders.length + '件・進行不可' : '⚠ 無検品出荷') + '</div>';
+                                    (niT.blocked ? '⛔ 無検品 ' + niT.noInspOrders.length + '件・進行不可' : '⚠ 無検品・重複') + '</div>';
                             }
                         }
 
