@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.5.0
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경.
+// @version      1.6.0
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -50,6 +50,14 @@
  *  v1.5.0 (피킹리스트 일본어화)
  *  - 인쇄창(피킹리스트)에 나오는 문구를 모두 일본어로 변경. 진행상태(출고 보류 등)도 일본어로 변환.
  *  - 관리팀이 보는 사이트 화면 안내창(주의 회원사 등)은 그대로 한국어.
+ *
+ *  v1.6.0 (무검품출하 표시)
+ *  - 무검품출하 출고건이면 제목 옆에 빨간 "無検品出荷" 표시.
+ *  - 출고건의 Tracking이 무검품출하 출고요청(다른 출고건 포함)에 들어가 있으면
+ *    상단에 "⚠ 無検品出荷 Tracking" 박스(관련 출고번호·진행상태)와,
+ *    로케이션/트래킹 칸에 "⚠ 無検品" 배지를 표시.
+ *  - 같은 Tracking에 무검품출하 출고요청이 2건 이상이면 "⛔ 進行不可(管理者確認)" 로 표시.
+ *    (포장 스크립트 packing-tools v1.5.0 의 팝업과 같은 기준)
  * ============================================================
  */
 
@@ -365,6 +373,149 @@
         return { list: list, error: error };
     }
 
+    /* ==========================================================
+     * [무검품출하 Tracking 확인 - 공용 로직]
+     *  (포장/packing-tools.user.js 와 관리/05-피킹리스트/picking-list-tools.user.js 에
+     *   똑같은 코드가 들어 있습니다. 한쪽을 고치면 다른 쪽도 같이 고쳐 주세요.)
+     *  1) 종합관리에서 Tracking번호로 검색 → 그 Tracking이 들어간 LH/OH 출고요청 목록
+     *     (종합관리 검색은 상품 중 하나라도 그 Tracking이면 나오고, 일부만 같아도 나오므로)
+     *  2) 각 출고요청의 포장 데이터(ajax_get_packing)를 읽어서
+     *     - 무검품 출하 선택 여부(no_inspection)
+     *     - 실제로 그 Tracking 상품이 들어 있는지 를 확인합니다.
+     *  ※ 읽기 전용 조회만 하며 사이트 데이터는 바꾸지 않습니다.
+     * ========================================================== */
+    const NoInsp = (() => {
+        // ★ 무검품출하 출고요청이 같은 Tracking에 몇 건 이상이면 "진행 불가"로 볼지
+        const BLOCK_MIN_COUNT = 2;
+        const DELIVERY_NO_RE = /^(LH|OH)/i;
+        const CANCEL_RE = /취소|キャンセル/;
+        const CACHE_TTL_MS = 3 * 60 * 1000;
+        const searchCache = new Map();   // trackingNo → {at, data}
+        const orderCache = new Map();    // type|id → {at, data}
+
+        const norm = (v) => String(v || '').replace(/[\s\-]/g, '').toUpperCase();
+        const txt = (el) => (el && el.textContent || '').replace(/\s+/g, ' ').trim();
+        const csrf = () => (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+        const fresh = (c) => c && Date.now() - c.at < CACHE_TTL_MS;
+
+        async function searchByTracking(trackingNo) {
+            const c = searchCache.get(trackingNo);
+            if (fresh(c)) return c.data;
+            const url = new URL(location.origin + '/admin/mgt/index');
+            url.searchParams.set('action', 'search');
+            url.searchParams.set('tracking_no', trackingNo);
+            url.searchParams.set('pagesize', '500');
+            const res = await fetch(url.toString(), { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            if (!res.ok) throw new Error('総合管理 HTTP ' + res.status);
+            const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+            const data = [];
+            const seen = new Set();
+            doc.querySelectorAll('table.table-bordered tbody tr').forEach((row) => {
+                if (row.cells.length < 15) return;
+                const link = row.cells[4] && row.cells[4].querySelector('.show-delivery-detail-btn');
+                if (!link) return;
+                const deliveryNo = txt(link).split(/\s+/)[0];
+                if (!DELIVERY_NO_RE.test(deliveryNo) || seen.has(deliveryNo)) return;
+                seen.add(deliveryNo);
+                const badge = row.cells[14] && row.cells[14].querySelector('.badge');
+                data.push({
+                    id: String(link.dataset.orderid || ''),
+                    type: String(link.dataset.type || 'delivery'),
+                    deliveryNo: deliveryNo,
+                    status: txt(badge || row.cells[14]) || '-',
+                });
+            });
+            searchCache.set(trackingNo, { at: Date.now(), data: data });
+            return data;
+        }
+
+        async function getOrder(id, type) {
+            const key = type + '|' + id;
+            const c = orderCache.get(key);
+            if (fresh(c)) return c.data;
+            const res = await fetch(location.origin + '/admin/shipping/ajax_get_packing', {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-TOKEN': csrf(),
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                },
+                body: 'type=' + encodeURIComponent(type) + '&id=' + encodeURIComponent(id),
+            });
+            if (!res.ok) throw new Error('梱包データ HTTP ' + res.status);
+            let json = await res.json();
+            if (typeof json === 'string') json = JSON.parse(json);
+            const p = (json && json.packing) || {};
+            const items = p.order_form_delivery_details || p.manual_order_form_jancode_details || [];
+            const data = {
+                noInspection: parseInt(p.no_inspection, 10) === 1,
+                trackings: new Set(items.map((it) => norm(it.tracking_no)).filter(Boolean)),
+            };
+            orderCache.set(key, { at: Date.now(), data: data });
+            return data;
+        }
+
+        async function mapLimit(list, limit, fn) {
+            const out = new Array(list.length);
+            let i = 0;
+            const worker = async () => {
+                while (i < list.length) {
+                    const k = i++;
+                    out[k] = await fn(list[k], k);
+                }
+            };
+            await Promise.all(Array.from({ length: Math.min(limit, list.length) }, worker));
+            return out;
+        }
+
+        /**
+         * trackingNos: 현재 출고건의 Tracking 목록
+         * current: { id, deliveryNo, noInspection } (현재 출고건. 없으면 null)
+         * 결과: { list: [{ trackingNo, orders, noInspOrders, blocked }], error }
+         *   - list 에는 무검품출하 출고요청이 1건 이상 걸린 Tracking만 들어갑니다.
+         *   - orders: 그 Tracking이 들어간 출고요청 전체(취소 제외), noInspection/isCurrent 표시
+         */
+        async function check(trackingNos, current) {
+            const uniq = Array.from(new Set((trackingNos || []).map((t) => String(t || '').trim()).filter(Boolean)));
+            const curNo = current ? String(current.deliveryNo || '').trim() : '';
+            const curId = current ? String(current.id || '') : '';
+            const errors = [];
+            const results = await mapLimit(uniq, 3, async (trackingNo) => {
+                try {
+                    const found = (await searchByTracking(trackingNo))
+                        .filter((o) => !CANCEL_RE.test(o.status));
+                    const orders = (await mapLimit(found, 4, async (o) => {
+                        const isCurrent = (curId && o.id === curId) || (curNo && o.deliveryNo === curNo);
+                        if (isCurrent) return Object.assign({}, o, { isCurrent: true, noInspection: !!current.noInspection });
+                        try {
+                            const d = await getOrder(o.id, o.type);
+                            // 종합관리 검색은 일부만 같아도 나오므로, 실제로 같은 Tracking이 있는 건만 남김
+                            if (!d.trackings.has(norm(trackingNo))) return null;
+                            return Object.assign({}, o, { isCurrent: false, noInspection: d.noInspection });
+                        } catch (e) {
+                            errors.push(o.deliveryNo + ': ' + (e.message || e));
+                            return null;
+                        }
+                    })).filter(Boolean);
+                    if (current && curNo && !orders.some((o) => o.isCurrent)) {
+                        orders.unshift({ id: curId, type: 'delivery', deliveryNo: curNo, status: '-', isCurrent: true, noInspection: !!current.noInspection });
+                    }
+                    orders.sort((a, b) => (b.isCurrent - a.isCurrent) || b.deliveryNo.localeCompare(a.deliveryNo));
+                    const noInspOrders = orders.filter((o) => o.noInspection);
+                    if (noInspOrders.length === 0) return null;
+                    return { trackingNo: trackingNo, orders: orders, noInspOrders: noInspOrders, blocked: noInspOrders.length >= BLOCK_MIN_COUNT };
+                } catch (e) {
+                    errors.push(trackingNo + ': ' + (e.message || e));
+                    return null;
+                }
+            });
+            return { list: results.filter(Boolean), error: errors.join(' / ') };
+        }
+
+        return { check: check, norm: norm, BLOCK_MIN_COUNT: BLOCK_MIN_COUNT, DELIVERY_NO_RE: DELIVERY_NO_RE };
+    })();
+
     function extractLocationWithQty(it) {
         let totalQty = parseInt(it.quantity || it.display_quantity || it.qty || "1");
 
@@ -557,11 +708,22 @@
 
                     // [v1.4.0] 배송대행 LH/OH 건: 같은 Tracking번호를 쓰는 다른 출고건 조회
                     let sameTracking = { list: [], error: '' };
+                    // [v1.6.0] 무검품출하 표시 (현재 출고건 여부 + Tracking별 무검품출하 출고요청)
+                    const isNoInspection = parseInt(packingData.no_inspection) === 1;
+                    let noInsp = { list: [], error: '', current: isNoInspection };
                     if (DELIVERY_NO_PATTERN.test(task.outNum) && (task.type.includes('delivery') || tr?.innerText.includes('배송대행') || tr?.innerText.includes('배송 대행'))) {
                         const tSet = new Set();
                         if (task.rowTracking) tSet.add(task.rowTracking);
                         processedItems.forEach(it => { if (it.tracking) tSet.add(it.tracking); });
-                        if (tSet.size > 0) sameTracking = await findSameTrackingOrders(Array.from(tSet));
+                        if (tSet.size > 0) {
+                            sameTracking = await findSameTrackingOrders(Array.from(tSet));
+                            try {
+                                const r = await NoInsp.check(Array.from(tSet), { id: task.id, deliveryNo: task.outNum, noInspection: isNoInspection });
+                                noInsp = { list: r.list, error: r.error, current: isNoInspection };
+                            } catch (e) {
+                                noInsp.error = String(e.message || e);
+                            }
+                        }
                     }
 
                     for (let p = 0; p * ITEMS_PER_PAGE < processedItems.length; p++) {
@@ -571,6 +733,7 @@
                             requirementMsg: cleanMsg,
                             isOcean: task.isOcean,
                             sameTracking: sameTracking,
+                            noInsp: noInsp,
                             items: processedItems.slice(p * ITEMS_PER_PAGE, (p + 1) * ITEMS_PER_PAGE),
                             pageNum: p + 1, totalPage: Math.ceil(processedItems.length / ITEMS_PER_PAGE),
                             originalIndex: task.originalIndex
@@ -634,6 +797,8 @@
             .st-chip .st-stat { font-weight:900; margin-left:4px; }
             .st-chip .st-stat.hold { color:#d00; }
             .st-chip .st-here { margin-left:4px; background:#7b1fa2; color:#fff; border-radius:3px; padding:0 4px; font-size:10px; }
+            .ni-box { border:3px solid #e65100; background:#fff3e0; padding:5px 8px; margin:0 0 8px 0; font-size:12px; color:#000; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            .ni-box.block { border-color:#c62828; background:#ffebee; }
             .kuji-reg { padding:3px 10px; background:#e69500; color:white; border:none; border-radius:4px; font-weight:bold; cursor:pointer; }
         </style>`;
 
@@ -783,6 +948,43 @@
                     return STATUS_JA[k] || s;
                 }
 
+                /* ---------- [v1.6.0] 무검품출하 표시 ---------- */
+                function noInspOf(g, trackingNo) {
+                    const ni = g.noInsp || { list: [] };
+                    const key = String(trackingNo || '').replace(/[\\s\\-]/g, '').toUpperCase();
+                    return ni.list.find(t => String(t.trackingNo).replace(/[\\s\\-]/g, '').toUpperCase() === key) || null;
+                }
+                function noInspHtml(g) {
+                    const ni = g.noInsp || { list: [], error: '' };
+                    let out = '';
+                    // 관련 출고건 구성이 똑같은 Tracking끼리는 한 칸으로 묶음
+                    const grouped = [];
+                    ni.list.forEach(t => {
+                        const sig = (t.blocked ? 'B|' : 'I|') + t.orders.map(o => o.deliveryNo + ':' + o.noInspection + ':' + o.status).join(',');
+                        const f = grouped.find(x => x.sig === sig);
+                        if (f) f.trackingNos.push(t.trackingNo);
+                        else grouped.push(Object.assign({}, t, { sig: sig, trackingNos: [t.trackingNo] }));
+                    });
+                    grouped.forEach(t => {
+                        const chips = t.orders.map(o => {
+                            const isCur = o.deliveryNo === String(g.outNum).trim();
+                            return '<span class="st-chip' + (isCur ? ' cur' : '') + '" style="' + (o.noInspection ? 'border-color:#c62828; color:#c62828; font-weight:900;' : '') + '">' +
+                                escHtml(o.deliveryNo) + (isCur ? ' ← 現在' : '') +
+                                '<span class="st-stat">[' + escHtml(jaStatus(o.status)) + ']</span>' +
+                                (o.noInspection ? ' 無検品' : '') + '</span>';
+                        }).join('');
+                        out += '<div class="ni-box' + (t.blocked ? ' block' : '') + '"><div class="st-title">' +
+                            (t.blocked ? '⛔ 無検品出荷の依頼 ' + t.noInspOrders.length + '件 · 進行不可（管理者確認）' : '⚠ 無検品出荷の依頼に含まれるTracking') +
+                            ' · Tracking No: ' + t.trackingNos.map(escHtml).join(', ') + '</div>' +
+                            '<div class="st-list">' + chips + '</div></div>';
+                    });
+                    if (ni.error) {
+                        out += '<div class="no-print" style="background:#e69500; color:#fff; padding:4px 8px; margin-bottom:6px; font-weight:bold; font-size:12px;">⚠ 無検品出荷の照会に一部失敗しました (' + escHtml(ni.error) + ') - 梱包画面で確認してください</div>';
+                    }
+                    return out;
+                }
+                /* ---------- [v1.6.0] 끝 ---------- */
+
                 function sameTrackingCount(g, trackingNo) {
                     const st = g.sameTracking || { list: [] };
                     const f = st.list.find(t => t.trackingNo === trackingNo);
@@ -894,6 +1096,11 @@
                             const stCnt = sameTrackingCount(g, it.tracking);
                             locContent += '<div style="font-size:12px; color:#3b82f6; font-weight:bold; margin-top:3px; text-align:center;">' + it.tracking + '</div>' +
                                 (stCnt >= 2 ? '<div style="font-size:11px; color:#fff; background:#7b1fa2; font-weight:900; margin-top:2px; border-radius:3px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">🔗 同一Tracking ' + stCnt + '件</div>' : '');
+                            const niT = noInspOf(g, it.tracking);
+                            if (niT) {
+                                locContent += '<div style="font-size:11px; color:#fff; background:' + (niT.blocked ? '#c62828' : '#e65100') + '; font-weight:900; margin-top:2px; border-radius:3px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">' +
+                                    (niT.blocked ? '⛔ 無検品 ' + niT.noInspOrders.length + '件・進行不可' : '⚠ 無検品出荷') + '</div>';
+                            }
                         }
 
                         rows += '<tr ' + rowStyle + '>' +
@@ -909,6 +1116,7 @@
 
                     const reqString = g.requests.length > 0 ? '🚩 ' + g.requests.join(' / ') : '';
                     const oceanLabel = g.isOcean ? '<div style="color:#007bff; font-weight:900; font-size:22px; margin-left:20px; border:3px solid #007bff; padding:2px 10px; border-radius:5px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">海運(OCEAN)</div>' : '';
+                    const noInspLabel = (g.noInsp && g.noInsp.current) ? '<div style="color:#fff; background:#c62828; font-weight:900; font-size:20px; margin-left:12px; padding:2px 10px; border-radius:5px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">無検品出荷</div>' : '';
                     const watermarkHtml = g.isOcean ? '<div class="watermark-overlay"></div>' : '';
 
                     html += '<div class="sheet ' + (g.isOcean ? 'is-ocean' : '') + '">' +
@@ -918,7 +1126,7 @@
                                         '<div style="flex:1;">' +
                                             '<div style="display:flex; align-items:center;">' +
                                                 '<h1 style="font-size:32px; margin:0; font-weight:900; letter-spacing:2px;">PICKING LIST</h1>' +
-                                                oceanLabel +
+                                                oceanLabel + noInspLabel +
                                             '</div>' +
                                             '<div style="font-size:14px; margin-top:5px; font-weight:bold; color:#333;">' +
                                                 '<span style="margin-right:15px;">TO: '+g.receiver+'</span><span>DATE: '+g.orderDate+'</span>' +
@@ -939,6 +1147,7 @@
                                         '<div style="color:#ff0000; font-weight:900; font-size:12px; max-width:70%;">' + (g.pageNum===1?reqString:"") + '</div>' +
                                         '<div style="font-size:22px; font-weight:900; color:#000;">'+g.outNum+'</div>' +
                                     '</div>' +
+                                    (g.pageNum === 1 ? noInspHtml(g) : '') +
                                     (g.pageNum === 1 ? sameTrackingHtml(g) : '') +
                                     kujiBannerHtml(kujiMap) +
                                     '<table style="width:100%; border-collapse:collapse; table-layout:fixed; border:2px solid #000;">' +
