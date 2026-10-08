@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 판매관리 통합 도구 (엑셀 다운로드 + 쿠지 이미지 엑셀)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.0.1
-// @description  판매관리(shop) 화면 통합본. 원본: 판매관리 페이지 엑셀 다운로드 v2.3 + 판매관리 - 쿠지 정보 엑셀 다운로드 v41.0
+// @version      1.0.2
+// @description  판매관리(shop) 화면 통합본. 원본: 판매관리 페이지 엑셀 다운로드 v2.3 + 판매관리 - 쿠지 정보 엑셀 다운로드 v41.0. v1.0.2: 상품 이미지가 아마존 S3로 바뀐 뒤 쿠지 엑셀이 안 받아지던 문제 수정(S3 접속 허용, 이미지 PNG 변환, 응답 없을 때 멈춤 방지, 이미지 없어도 엑셀은 저장).
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shop/order*
 // @match        https://platform.co.jp/admin/shop/order*
@@ -11,6 +11,8 @@
 // @require      https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js
 // @grant        GM_xmlhttpRequest
 // @connect      assets.1kuji.com
+// @connect      amazonaws.com
+// @connect      platform.co.jp
 // @connect      *
 // @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/04-판매관리/shop-tools.user.js
 // @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/04-판매관리/shop-tools.user.js
@@ -362,44 +364,87 @@
                 modalFooter.appendChild(excelBtn);
             }
 
-            excelBtn.addEventListener('click', downloadKujiExcelWithAbsoluteImage);
+            // [v1.0.2] 오류가 나도 조용히 멈추지 않고 알려 주도록 감쌈
+            excelBtn.addEventListener('click', async () => {
+                if (excelBtn.disabled) return;
+                const label = excelBtn.innerText;
+                excelBtn.disabled = true;
+                excelBtn.innerText = '⏳ 엑셀 만드는 중...';
+                try {
+                    await downloadKujiExcelWithAbsoluteImage();
+                } catch (e) {
+                    console.error('[쿠지 엑셀] 실패', e);
+                    alert('엑셀을 만들지 못했습니다.\n' + (e && e.message ? e.message : e));
+                } finally {
+                    excelBtn.disabled = false;
+                    excelBtn.innerText = label;
+                }
+            });
         }
     }, 250);
 
+    /* [v1.0.2] 이미지 가져오기 수정
+     *  - 상품 이미지가 사이트 서버 → 아마존 S3(platform-s3.s3...amazonaws.com)로 바뀜.
+     *    S3 주소는 10분짜리 임시 주소이고, 응답의 파일 종류 표시가 이미지가 아닐 수 있어
+     *    예전처럼 그대로 엑셀에 넣으면 엑셀 저장 단계에서 실패하거나 깨진 파일이 됐음.
+     *  - 받아온 데이터를 브라우저에서 그림으로 한 번 열어 본 뒤 PNG로 바꿔서 넣음
+     *    (jpg/png/webp 모두 OK, 만료·오류 응답이면 그림으로 안 열려서 이미지 없이 진행).
+     *  - 응답이 없을 때 끝없이 기다리지 않도록 20초 제한.
+     */
     function fetchImageAsBase64(url) {
         return new Promise((resolve) => {
             if (!url) return resolve(null);
             if (url.startsWith('/')) {
                 url = window.location.origin + url;
             }
+            let finished = false;
+            const done = (v, why) => {
+                if (finished) return;
+                finished = true;
+                if (!v) console.warn('[쿠지 엑셀] 이미지 못 가져옴:', why, url);
+                resolve(v);
+            };
+            setTimeout(() => done(null, '시간 초과'), 25000);
 
             GM_xmlhttpRequest({
                 method: "GET",
                 url: url,
                 responseType: "arraybuffer",
+                timeout: 20000,
                 onload: function(response) {
-                    try {
-                        const contentType = response.responseHeaders.match(/content-type:\s*([^\s;]+)/i)?.[1] || "image/jpeg";
-                        const extension = contentType.split('/')[1] || "jpeg";
-
-                        const bytes = new Uint8Array(response.response);
-                        let binary = "";
-                        const len = bytes.byteLength;
-                        for (let i = 0; i < len; i++) {
-                            binary += String.fromCharCode(bytes[i]);
-                        }
-                        const base64 = window.btoa(binary);
-
-                        resolve({ base64: base64, extension: extension });
-                    } catch (e) {
-                        resolve(null);
-                    }
+                    if (response.status < 200 || response.status >= 300) return done(null, 'HTTP ' + response.status);
+                    toPngBase64(response.response)
+                        .then(b64 => done(b64 ? { base64: b64, extension: 'png' } : null, '그림으로 열 수 없음'))
+                        .catch(e => done(null, String(e)));
                 },
-                onerror: function() {
-                    resolve(null);
-                }
+                onerror: function() { done(null, '접속 오류(템퍼몽키 접속 허용 확인)'); },
+                ontimeout: function() { done(null, '시간 초과'); },
+                onabort: function() { done(null, '중단됨'); }
             });
         });
+    }
+
+    async function toPngBase64(arrayBuffer) {
+        if (!arrayBuffer || !arrayBuffer.byteLength) return null;
+        const blob = new Blob([arrayBuffer]);
+        const blobUrl = URL.createObjectURL(blob);
+        try {
+            const img = await new Promise((res, rej) => {
+                const i = new Image();
+                i.onload = () => res(i);
+                i.onerror = () => rej(new Error('이미지 아님'));
+                i.src = blobUrl;
+            });
+            const canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            canvas.getContext('2d').drawImage(img, 0, 0);
+            return canvas.toDataURL('image/png').split(',')[1] || null;
+        } catch (e) {
+            return null;
+        } finally {
+            URL.revokeObjectURL(blobUrl);
+        }
     }
 
     async function downloadKujiExcelWithAbsoluteImage() {
@@ -423,7 +468,8 @@
         brandName = brandName.replace(/\s+/g, ' ').trim();
 
         let imgUrl = '';
-        const mainImgTag = targetDoc.getElementById('edit_main1_cur_image') || modal.getElementById('edit_main1_cur_image') || targetDoc.querySelector('img[src*="kuji"]') || targetDoc.querySelector('img[src*="/upload/"]');
+        // [v1.0.2] modal.getElementById 는 없는 함수라(이미지가 없는 상품에서) 오류로 멈췄음 → querySelector 로 변경
+        const mainImgTag = targetDoc.getElementById('edit_main1_cur_image') || modal.querySelector('#edit_main1_cur_image') || targetDoc.querySelector('img[src*="kuji"]') || targetDoc.querySelector('img[src*="/upload/"]');
         if (mainImgTag && mainImgTag.src) {
             imgUrl = mainImgTag.src;
         }
@@ -509,8 +555,10 @@
 
         worksheet.addRows(sheetData);
 
+        let imageMissing = false;
         if (imgUrl) {
             const imgData = await fetchImageAsBase64(imgUrl);
+            if (!imgData) imageMissing = true;
             if (imgData && imgData.base64) {
                 try {
                     const imageId = workbook.addImage({
@@ -585,5 +633,10 @@
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+
+        if (imageMissing) {
+            alert('엑셀은 저장했지만 상품 이미지는 넣지 못했습니다.\n(이미지 주소는 10분 지나면 만료됩니다. 편집 창을 닫았다가 다시 열고 한 번 더 눌러 보세요)');
+        }
     }
 })();
