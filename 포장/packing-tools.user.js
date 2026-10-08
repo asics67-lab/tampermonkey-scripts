@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장출고 통합 도구 (회원사메모 + 에토와르매칭 + LH/OH중복알림 + 오션배너 + 무검품출하알림)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.5.0
+// @version      1.5.1
 // @description  포장/출고(shipping/packing) 화면 통합본. 원본: 회원사 특이사항(메모) 공유 시스템 v4.7 + 에토와르 주소 매칭 v21.0 + LH/OH Tracking 중복 알림 v1.4.0 + 포장 오션 강조 배너 v1.1 + 무검품출하 Tracking 알림 v1.0
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
@@ -69,6 +69,11 @@
  *      포장완료 버튼·중량칸 Enter가 막히고, 관리자 확인 후 [管理者確認済み・進行] 으로만 통과.
  *    · 기준 건수는 블록 5 안의 BLOCK_MIN_COUNT 한 곳에서 바꿀 수 있습니다.
  *  - 같은 확인 로직이 피킹리스트(관리/05-피킹리스트)에도 들어 있습니다.
+ *
+ *  v1.5.1 변경 (요청: "모든 무검품출하에 팝업이 아니라 중복되는 경우에만")
+ *  - [블록 5] 팝업·배너·행 배지는 무검품출하 Tracking이 "다른 출고요청에도 들어가 있을 때(중복)"만
+ *    표시합니다. 중복 없는 일반 무검품출하 출고건에서는 아무것도 뜨지 않습니다
+ *    (사이트 원래의 "무검품 출하" 표시는 그대로 나옵니다).
  * ============================================================
  */
 
@@ -1094,6 +1099,7 @@
          * current: { id, deliveryNo, noInspection } (현재 출고건. 없으면 null)
          * 결과: { list: [{ trackingNo, orders, noInspOrders, blocked }], error }
          *   - list 에는 무검품출하 출고요청이 1건 이상 걸린 Tracking만 들어갑니다.
+         *   - duplicate: 그 Tracking이 2건 이상의 출고요청에 들어가 있음(중복)
          *   - orders: 그 Tracking이 들어간 출고요청 전체(취소 제외), noInspection/isCurrent 표시
          */
         async function check(trackingNos, current) {
@@ -1124,7 +1130,7 @@
                     orders.sort((a, b) => (b.isCurrent - a.isCurrent) || b.deliveryNo.localeCompare(a.deliveryNo));
                     const noInspOrders = orders.filter((o) => o.noInspection);
                     if (noInspOrders.length === 0) return null;
-                    return { trackingNo: trackingNo, orders: orders, noInspOrders: noInspOrders, blocked: noInspOrders.length >= BLOCK_MIN_COUNT };
+                    return { trackingNo: trackingNo, orders: orders, noInspOrders: noInspOrders, blocked: noInspOrders.length >= BLOCK_MIN_COUNT, duplicate: orders.length >= 2 };
                 } catch (e) {
                     errors.push(trackingNo + ': ' + (e.message || e));
                     return null;
@@ -1228,7 +1234,7 @@
                 if (NoInsp.norm(a.getAttribute('data-trackingno')) !== NoInsp.norm(t.trackingNo)) return;
                 const b = document.createElement('span');
                 b.className = 'badge ni-row-badge' + (t.blocked ? ' block' : '');
-                b.textContent = t.blocked ? '⛔ 無検品 ' + t.noInspOrders.length + '件・進行不可' : '⚠ 無検品出荷';
+                b.textContent = t.blocked ? '⛔ 無検品 ' + t.noInspOrders.length + '件・進行不可' : '⚠ 無検品・重複';
                 a.insertAdjacentElement('afterend', b);
             });
         });
@@ -1245,7 +1251,7 @@
             div.innerHTML = blocked
                 ? '⛔ 無検品出荷の依頼が同じTrackingに' + NoInsp.BLOCK_MIN_COUNT + '件以上あります → 梱包進行不可（管理者確認）'
                 : (cur.noInspection
-                    ? '⚠ 無検品出荷：検品なしでそのまま全量出荷'
+                    ? '⚠ 無検品出荷：同じTrackingが別の出荷件にもあります'
                     : '⚠ このTrackingは無検品出荷の依頼に含まれています（別の出荷件）');
             div.innerHTML += ' <span style="font-size:.8rem;font-weight:700;">[' +
                 result.list.map((t) => esc(t.trackingNo)).join(', ') + ']</span>';
@@ -1300,8 +1306,8 @@
             msg = '同じTrackingに無検品出荷の依頼が' + NoInsp.BLOCK_MIN_COUNT + '件以上あるため、梱包を進行できません。<br>管理者に確認してください。' +
                 '<div class="ni-ko">같은 Tracking에 무검품출하 출고요청이 ' + NoInsp.BLOCK_MIN_COUNT + '건 이상 있어 포장을 진행할 수 없습니다. 관리자에게 확인해 주세요.</div>';
         } else if (cur.noInspection) {
-            msg = 'この出荷件は「無検品出荷」です。検品せず、Trackingの荷物をそのまま全量出荷してください。' +
-                '<div class="ni-ko">무검품출하 출고건입니다. 검품 없이 해당 Tracking 박스를 그대로 전량 출고합니다. 상품을 하나씩 찾거나 스캔할 필요가 없습니다.</div>';
+            msg = 'この出荷件は「無検品出荷」ですが、同じTrackingが別の出荷件にも含まれています。<br>下の出荷件を確認してから進めてください。' +
+                '<div class="ni-ko">무검품출하 출고건인데, 같은 Tracking이 다른 출고요청에도 들어가 있습니다. 아래 출고건을 확인한 뒤 진행해 주세요.</div>';
         } else {
             msg = 'このTrackingは、別の「無検品出荷」の出荷依頼に含まれています。<br>このTrackingの商品は個別に探さず、管理者・出荷状態を確認してください。' +
                 '<div class="ni-ko">이 Tracking은 다른 무검품출하 출고요청에 들어가 있습니다. 해당 Tracking 상품은 따로 찾지 말고 아래 출고건 상태를 확인해 주세요.</div>';
@@ -1401,8 +1407,10 @@
             w.textContent = '無検品出荷 Tracking 確認中…';
             body.prepend(w);
         }
-        const result = await NoInsp.check(cur.trackings, { id: cur.packingId, deliveryNo: cur.deliveryNo, noInspection: cur.noInspection });
+        const raw = await NoInsp.check(cur.trackings, { id: cur.packingId, deliveryNo: cur.deliveryNo, noInspection: cur.noInspection });
         if (token !== runToken || !isVisible()) return;
+        // [v1.5.1] 다른 출고요청과 중복되는 무검품출하 Tracking만 대상
+        const result = { list: raw.list.filter((t) => t.duplicate || t.blocked), error: raw.error };
 
         state.result = result;
         state.blocked = result.list.some((t) => t.blocked);
