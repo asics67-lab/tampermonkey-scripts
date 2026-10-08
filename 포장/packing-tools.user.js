@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         [포장] 포장출고 통합 도구 (회원사메모 + 에토와르매칭 + LH/OH중복알림 + 오션배너)
+// @name         [포장] 포장출고 통합 도구 (회원사메모 + 에토와르매칭 + LH/OH중복알림 + 오션배너 + 무검품출하알림)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.4.2
-// @description  포장/출고(shipping/packing) 화면 통합본. 원본: 회원사 특이사항(메모) 공유 시스템 v4.7 + 에토와르 주소 매칭 v21.0 + LH/OH Tracking 중복 알림 v1.4.0 + 포장 오션 강조 배너 v1.1
+// @version      1.5.0
+// @description  포장/출고(shipping/packing) 화면 통합본. 원본: 회원사 특이사항(메모) 공유 시스템 v4.7 + 에토와르 주소 매칭 v21.0 + LH/OH Tracking 중복 알림 v1.4.0 + 포장 오션 강조 배너 v1.1 + 무검품출하 Tracking 알림 v1.0
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -59,6 +59,16 @@
  *  v1.4.1 긴급 수정 (보고: "적용 후 화면이 비활성화되어 새로고침도 안 되고 아무것도 안 움직인다")
  *  - [블록 4] v1.4.0의 모달 감시가 자기 자신이 만든 변경(배너 추가/삭제)에 다시 반응하는
  *    무한 반복에 빠져 브라우저가 멈췄습니다. 모달의 열림/닫힘 상태 변화만 감시하도록 고쳤습니다.
+ *
+ *  v1.5.0 추가 기능 (요청: "무검품출하 출고요청에 들어간 Tracking이면 팝업")
+ *  - [블록 5] 포장 진행 창이 열리면, 그 출고건의 Tracking이 "무검품 출하"가 선택된
+ *    출고요청(현재 출고건 포함)에 들어가 있는지 종합관리 검색 + 포장 데이터로 확인합니다.
+ *    · 무검품출하 출고요청 1건 → 주황 팝업/배너 + 해당 Tracking 행에 "⚠ 無検品出荷" 표시.
+ *      [該当Trackingの項目をまとめてチェック] 로 그 Tracking 상품을 한 번에 체크 가능.
+ *    · 같은 Tracking에 무검품출하 출고요청 2건 이상 → 빨간 "梱包進行不可" 팝업.
+ *      포장완료 버튼·중량칸 Enter가 막히고, 관리자 확인 후 [管理者確認済み・進行] 으로만 통과.
+ *    · 기준 건수는 블록 5 안의 BLOCK_MIN_COUNT 한 곳에서 바꿀 수 있습니다.
+ *  - 같은 확인 로직이 피킹리스트(관리/05-피킹리스트)에도 들어 있습니다.
  * ============================================================
  */
 
@@ -970,4 +980,450 @@
         });
     }
 
+})();
+
+/* ------------------------------------------------------------
+ * [블록 5] 무검품출하 Tracking 알림 v1.0 (packing-tools v1.5.0)
+ *  - 포장 진행 창이 열리면, 그 출고건의 Tracking이 "무검품 출하"가 선택된
+ *    출고요청에 들어가 있는지 확인합니다. (현재 출고건 포함)
+ *    · 1건  → 안내 팝업 + 해당 Tracking 행에 "無検品" 표시
+ *    · 2건 이상 → 진행 불가 팝업(빨강) + 포장완료 버튼/Enter 차단
+ *      (관리자 확인 후 [管理者確認済み・進行] 으로만 통과)
+ * ------------------------------------------------------------ */
+(function () {
+    'use strict';
+
+    /* ==========================================================
+     * [무검품출하 Tracking 확인 - 공용 로직]
+     *  (포장/packing-tools.user.js 와 관리/05-피킹리스트/picking-list-tools.user.js 에
+     *   똑같은 코드가 들어 있습니다. 한쪽을 고치면 다른 쪽도 같이 고쳐 주세요.)
+     *  1) 종합관리에서 Tracking번호로 검색 → 그 Tracking이 들어간 LH/OH 출고요청 목록
+     *     (종합관리 검색은 상품 중 하나라도 그 Tracking이면 나오고, 일부만 같아도 나오므로)
+     *  2) 각 출고요청의 포장 데이터(ajax_get_packing)를 읽어서
+     *     - 무검품 출하 선택 여부(no_inspection)
+     *     - 실제로 그 Tracking 상품이 들어 있는지 를 확인합니다.
+     *  ※ 읽기 전용 조회만 하며 사이트 데이터는 바꾸지 않습니다.
+     * ========================================================== */
+    const NoInsp = (() => {
+        // ★ 무검품출하 출고요청이 같은 Tracking에 몇 건 이상이면 "진행 불가"로 볼지
+        const BLOCK_MIN_COUNT = 2;
+        const DELIVERY_NO_RE = /^(LH|OH)/i;
+        const CANCEL_RE = /취소|キャンセル/;
+        const CACHE_TTL_MS = 3 * 60 * 1000;
+        const searchCache = new Map();   // trackingNo → {at, data}
+        const orderCache = new Map();    // type|id → {at, data}
+
+        const norm = (v) => String(v || '').replace(/[\s\-]/g, '').toUpperCase();
+        const txt = (el) => (el && el.textContent || '').replace(/\s+/g, ' ').trim();
+        const csrf = () => (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+        const fresh = (c) => c && Date.now() - c.at < CACHE_TTL_MS;
+
+        async function searchByTracking(trackingNo) {
+            const c = searchCache.get(trackingNo);
+            if (fresh(c)) return c.data;
+            const url = new URL(location.origin + '/admin/mgt/index');
+            url.searchParams.set('action', 'search');
+            url.searchParams.set('tracking_no', trackingNo);
+            url.searchParams.set('pagesize', '500');
+            const res = await fetch(url.toString(), { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            if (!res.ok) throw new Error('総合管理 HTTP ' + res.status);
+            const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+            const data = [];
+            const seen = new Set();
+            doc.querySelectorAll('table.table-bordered tbody tr').forEach((row) => {
+                if (row.cells.length < 15) return;
+                const link = row.cells[4] && row.cells[4].querySelector('.show-delivery-detail-btn');
+                if (!link) return;
+                const deliveryNo = txt(link).split(/\s+/)[0];
+                if (!DELIVERY_NO_RE.test(deliveryNo) || seen.has(deliveryNo)) return;
+                seen.add(deliveryNo);
+                const badge = row.cells[14] && row.cells[14].querySelector('.badge');
+                data.push({
+                    id: String(link.dataset.orderid || ''),
+                    type: String(link.dataset.type || 'delivery'),
+                    deliveryNo: deliveryNo,
+                    status: txt(badge || row.cells[14]) || '-',
+                });
+            });
+            searchCache.set(trackingNo, { at: Date.now(), data: data });
+            return data;
+        }
+
+        async function getOrder(id, type) {
+            const key = type + '|' + id;
+            const c = orderCache.get(key);
+            if (fresh(c)) return c.data;
+            const res = await fetch(location.origin + '/admin/shipping/ajax_get_packing', {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-TOKEN': csrf(),
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                },
+                body: 'type=' + encodeURIComponent(type) + '&id=' + encodeURIComponent(id),
+            });
+            if (!res.ok) throw new Error('梱包データ HTTP ' + res.status);
+            let json = await res.json();
+            if (typeof json === 'string') json = JSON.parse(json);
+            const p = (json && json.packing) || {};
+            const items = p.order_form_delivery_details || p.manual_order_form_jancode_details || [];
+            const data = {
+                noInspection: parseInt(p.no_inspection, 10) === 1,
+                trackings: new Set(items.map((it) => norm(it.tracking_no)).filter(Boolean)),
+            };
+            orderCache.set(key, { at: Date.now(), data: data });
+            return data;
+        }
+
+        async function mapLimit(list, limit, fn) {
+            const out = new Array(list.length);
+            let i = 0;
+            const worker = async () => {
+                while (i < list.length) {
+                    const k = i++;
+                    out[k] = await fn(list[k], k);
+                }
+            };
+            await Promise.all(Array.from({ length: Math.min(limit, list.length) }, worker));
+            return out;
+        }
+
+        /**
+         * trackingNos: 현재 출고건의 Tracking 목록
+         * current: { id, deliveryNo, noInspection } (현재 출고건. 없으면 null)
+         * 결과: { list: [{ trackingNo, orders, noInspOrders, blocked }], error }
+         *   - list 에는 무검품출하 출고요청이 1건 이상 걸린 Tracking만 들어갑니다.
+         *   - orders: 그 Tracking이 들어간 출고요청 전체(취소 제외), noInspection/isCurrent 표시
+         */
+        async function check(trackingNos, current) {
+            const uniq = Array.from(new Set((trackingNos || []).map((t) => String(t || '').trim()).filter(Boolean)));
+            const curNo = current ? String(current.deliveryNo || '').trim() : '';
+            const curId = current ? String(current.id || '') : '';
+            const errors = [];
+            const results = await mapLimit(uniq, 3, async (trackingNo) => {
+                try {
+                    const found = (await searchByTracking(trackingNo))
+                        .filter((o) => !CANCEL_RE.test(o.status));
+                    const orders = (await mapLimit(found, 4, async (o) => {
+                        const isCurrent = (curId && o.id === curId) || (curNo && o.deliveryNo === curNo);
+                        if (isCurrent) return Object.assign({}, o, { isCurrent: true, noInspection: !!current.noInspection });
+                        try {
+                            const d = await getOrder(o.id, o.type);
+                            // 종합관리 검색은 일부만 같아도 나오므로, 실제로 같은 Tracking이 있는 건만 남김
+                            if (!d.trackings.has(norm(trackingNo))) return null;
+                            return Object.assign({}, o, { isCurrent: false, noInspection: d.noInspection });
+                        } catch (e) {
+                            errors.push(o.deliveryNo + ': ' + (e.message || e));
+                            return null;
+                        }
+                    })).filter(Boolean);
+                    if (current && curNo && !orders.some((o) => o.isCurrent)) {
+                        orders.unshift({ id: curId, type: 'delivery', deliveryNo: curNo, status: '-', isCurrent: true, noInspection: !!current.noInspection });
+                    }
+                    orders.sort((a, b) => (b.isCurrent - a.isCurrent) || b.deliveryNo.localeCompare(a.deliveryNo));
+                    const noInspOrders = orders.filter((o) => o.noInspection);
+                    if (noInspOrders.length === 0) return null;
+                    return { trackingNo: trackingNo, orders: orders, noInspOrders: noInspOrders, blocked: noInspOrders.length >= BLOCK_MIN_COUNT };
+                } catch (e) {
+                    errors.push(trackingNo + ': ' + (e.message || e));
+                    return null;
+                }
+            });
+            return { list: results.filter(Boolean), error: errors.join(' / ') };
+        }
+
+        return { check: check, norm: norm, BLOCK_MIN_COUNT: BLOCK_MIN_COUNT, DELIVERY_NO_RE: DELIVERY_NO_RE };
+    })();
+
+    const packingModalEl = document.getElementById('packingModal');
+    if (!packingModalEl) return;
+
+    const STATUS_JA = {
+        '접수': '受付', '포장진행': '梱包進行', '포장완료': '梱包完了', '출고요청': '出荷依頼',
+        '출고대기': '出荷待ち', '출고보류': '出荷保留', '출고완료': '出荷完了', '발송완료': '発送完了',
+        '보류': '保留', '배송중': '配送中', '배송완료': '配送完了'
+    };
+    const jaStatus = (s) => STATUS_JA[String(s || '').replace(/\s+/g, '')] || s || '-';
+    const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // 현재 열린 포장창 상태
+    let runToken = 0;
+    let state = null; // { packingId, result, blocked, bypass }
+
+    const style = document.createElement('style');
+    style.textContent = `
+        #ni-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 100002;
+            display: flex; align-items: center; justify-content: center; }
+        #ni-box { background: #fff; border-radius: 10px; width: min(720px, 94vw); max-height: 88vh;
+            overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.3); font-family: "Public Sans", sans-serif; }
+        #ni-box .ni-head { padding: 14px 18px; color: #fff; font-weight: 900; font-size: 1.15rem; }
+        #ni-box.info .ni-head { background: #e65100; }
+        #ni-box.block .ni-head { background: #c62828; }
+        #ni-box .ni-body { padding: 14px 18px; overflow-y: auto; max-height: calc(88vh - 130px); font-size: .9rem; color: #222; }
+        #ni-box .ni-msg { font-weight: 700; line-height: 1.5; margin-bottom: 10px; }
+        #ni-box .ni-ko { font-size: .8rem; color: #666; font-weight: 400; }
+        #ni-box .ni-t { border: 2px solid #ddd; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
+        #ni-box .ni-t.block { border-color: #c62828; background: #fff5f5; }
+        #ni-box .ni-t.info { border-color: #e65100; background: #fff8f0; }
+        #ni-box .ni-t-title { font-weight: 900; margin-bottom: 6px; }
+        #ni-box .ni-chip { display: inline-block; border: 1.5px solid #888; border-radius: 4px; padding: 2px 7px;
+            margin: 2px 4px 2px 0; background: #fff; font-size: .8rem; white-space: nowrap; }
+        #ni-box .ni-chip.ni { border-color: #c62828; color: #c62828; font-weight: 900; }
+        #ni-box .ni-chip.cur { background: #fff3cd; }
+        #ni-box .ni-foot { padding: 12px 18px; border-top: 1px solid #eee; display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+        #ni-box .ni-foot button { border: none; border-radius: 5px; padding: 8px 14px; cursor: pointer; font-weight: 700; font-size: .85rem; }
+        #ni-box .ni-ok { background: #696cff; color: #fff; }
+        #ni-box .ni-check { background: #2e7d32; color: #fff; }
+        #ni-box .ni-bypass { background: #8592a3; color: #fff; }
+        .ni-banner { border: 3px solid #e65100; background: #fff3e0; color: #bf360c; font-weight: 900;
+            padding: 10px 14px; margin: 0 0 10px; border-radius: 8px; font-size: 1.05rem; }
+        .ni-banner.block { border-color: #c62828; background: #ffebee; color: #b71c1c; }
+        .ni-banner.err { border-color: #e69500; background: #fff8e1; color: #8a5a00; font-size: .85rem; }
+        .ni-row-badge { display: inline-block; margin-top: 3px; padding: 1px 6px; border-radius: 3px;
+            background: #e65100 !important; color: #fff !important; font-size: 11px; font-weight: 900; }
+        .ni-row-badge.block { background: #c62828 !important; }
+    `;
+    document.head.appendChild(style);
+
+    const isVisible = () => packingModalEl.classList.contains('show') || packingModalEl.style.display === 'block';
+
+    function closePopup() {
+        const ov = document.getElementById('ni-overlay');
+        if (ov) ov.remove();
+    }
+
+    function clearUI() {
+        closePopup();
+        packingModalEl.querySelectorAll('.ni-banner, .ni-row-badge').forEach((el) => el.remove());
+    }
+
+    function readCurrent() {
+        const deliveryNo = ((document.getElementById('delivery_no') || {}).textContent || '').trim();
+        const packingId = ((document.getElementById('packing_id') || {}).value || '').trim();
+        const packingType = ((document.getElementById('packing_type') || {}).value || '').trim();
+        const noInspection = ((document.getElementById('no_inspection') || {}).textContent || '').trim() !== '';
+        const trackings = new Set();
+        document.querySelectorAll('#packingItemsTbody .show_tracking_page, #packingItemsTbody td[data-trackingno]').forEach((el) => {
+            const t = String(el.getAttribute('data-trackingno') || '').trim();
+            if (t && t !== 'null' && t !== 'undefined') trackings.add(t);
+        });
+        return { deliveryNo, packingId, packingType, noInspection, trackings: Array.from(trackings) };
+    }
+
+    // 해당 Tracking 행들 (포장창 표 안)
+    function rowsOfTracking(trackingNo) {
+        const key = NoInsp.norm(trackingNo);
+        return Array.from(document.querySelectorAll('#packingItemsTbody tr')).filter((tr) => {
+            const el = tr.querySelector('.show_tracking_page, td[data-trackingno]');
+            return el && NoInsp.norm(el.getAttribute('data-trackingno')) === key;
+        });
+    }
+
+    function markRows(result) {
+        packingModalEl.querySelectorAll('.ni-row-badge').forEach((el) => el.remove());
+        result.list.forEach((t) => {
+            // 같은 Tracking 행은 로케이션 칸이 합쳐져 있으므로, 링크가 있는 칸마다 한 번만 표시
+            document.querySelectorAll('#packingItemsTbody .show_tracking_page').forEach((a) => {
+                if (NoInsp.norm(a.getAttribute('data-trackingno')) !== NoInsp.norm(t.trackingNo)) return;
+                const b = document.createElement('span');
+                b.className = 'badge ni-row-badge' + (t.blocked ? ' block' : '');
+                b.textContent = t.blocked ? '⛔ 無検品 ' + t.noInspOrders.length + '件・進行不可' : '⚠ 無検品出荷';
+                a.insertAdjacentElement('afterend', b);
+            });
+        });
+    }
+
+    function showBanner(result, cur) {
+        packingModalEl.querySelectorAll('.ni-banner').forEach((el) => el.remove());
+        const body = packingModalEl.querySelector('.modal-body');
+        if (!body) return;
+        if (result.list.length > 0) {
+            const blocked = result.list.some((t) => t.blocked);
+            const div = document.createElement('div');
+            div.className = 'ni-banner' + (blocked ? ' block' : '');
+            div.innerHTML = blocked
+                ? '⛔ 無検品出荷の依頼が同じTrackingに' + NoInsp.BLOCK_MIN_COUNT + '件以上あります → 梱包進行不可（管理者確認）'
+                : (cur.noInspection
+                    ? '⚠ 無検品出荷：検品なしでそのまま全量出荷'
+                    : '⚠ このTrackingは無検品出荷の依頼に含まれています（別の出荷件）');
+            div.innerHTML += ' <span style="font-size:.8rem;font-weight:700;">[' +
+                result.list.map((t) => esc(t.trackingNo)).join(', ') + ']</span>';
+            body.prepend(div);
+        }
+        if (result.error) {
+            const e = document.createElement('div');
+            e.className = 'ni-banner err';
+            e.textContent = '⚠ 無検品出荷の確認に一部失敗しました（' + result.error + '）— 総合管理で確認してください';
+            body.prepend(e);
+        }
+    }
+
+    function checkRowsOf(trackingNos) {
+        let n = 0;
+        trackingNos.forEach((t) => rowsOfTracking(t).forEach((tr) => {
+            const cb = tr.querySelector('input.sub_checkbox');
+            if (cb && !cb.checked && !cb.disabled) { cb.click(); n++; }
+        }));
+        return n;
+    }
+
+    function showPopup(result, cur) {
+        closePopup();
+        const blocked = result.list.some((t) => t.blocked);
+        const mgtUrl = (t) => location.origin + '/admin/mgt/index?action=search&tracking_no=' + encodeURIComponent(t);
+
+        // 관련 출고건 구성이 똑같은 Tracking끼리는 한 칸으로 묶어서 표시 (무검품 출고건 1건에 Tracking 여러 개인 경우 등)
+        const groups = [];
+        result.list.forEach((t) => {
+            const sig = (t.blocked ? 'B|' : 'I|') + t.orders.map((o) => o.deliveryNo + ':' + o.noInspection + ':' + o.status).join(',');
+            const g = groups.find((x) => x.sig === sig);
+            if (g) g.trackingNos.push(t.trackingNo);
+            else groups.push(Object.assign({}, t, { sig: sig, trackingNos: [t.trackingNo] }));
+        });
+
+        const blocks = groups.map((t) => {
+            const chips = t.orders.map((o) =>
+                '<span class="ni-chip' + (o.noInspection ? ' ni' : '') + (o.isCurrent ? ' cur' : '') + '">' +
+                esc(o.deliveryNo) + (o.isCurrent ? ' ← 現在' : '') +
+                ' [' + esc(jaStatus(o.status)) + ']' + (o.noInspection ? ' 無検品' : '') + '</span>'
+            ).join('');
+            return '<div class="ni-t ' + (t.blocked ? 'block' : 'info') + '">' +
+                '<div class="ni-t-title">Tracking No: ' + t.trackingNos.map(esc).join(', ') +
+                ' — 無検品出荷の依頼 ' + t.noInspOrders.length + '件' +
+                ' <a href="' + mgtUrl(t.trackingNo) + '" target="_blank" rel="noopener" style="font-weight:400;font-size:.8rem;margin-left:6px;">総合管理で確認</a></div>' +
+                chips + '</div>';
+        }).join('');
+
+        let msg;
+        if (blocked) {
+            msg = '同じTrackingに無検品出荷の依頼が' + NoInsp.BLOCK_MIN_COUNT + '件以上あるため、梱包を進行できません。<br>管理者に確認してください。' +
+                '<div class="ni-ko">같은 Tracking에 무검품출하 출고요청이 ' + NoInsp.BLOCK_MIN_COUNT + '건 이상 있어 포장을 진행할 수 없습니다. 관리자에게 확인해 주세요.</div>';
+        } else if (cur.noInspection) {
+            msg = 'この出荷件は「無検品出荷」です。検品せず、Trackingの荷物をそのまま全量出荷してください。' +
+                '<div class="ni-ko">무검품출하 출고건입니다. 검품 없이 해당 Tracking 박스를 그대로 전량 출고합니다. 상품을 하나씩 찾거나 스캔할 필요가 없습니다.</div>';
+        } else {
+            msg = 'このTrackingは、別の「無検品出荷」の出荷依頼に含まれています。<br>このTrackingの商品は個別に探さず、管理者・出荷状態を確認してください。' +
+                '<div class="ni-ko">이 Tracking은 다른 무검품출하 출고요청에 들어가 있습니다. 해당 Tracking 상품은 따로 찾지 말고 아래 출고건 상태를 확인해 주세요.</div>';
+        }
+
+        const ov = document.createElement('div');
+        ov.id = 'ni-overlay';
+        ov.innerHTML =
+            '<div id="ni-box" class="' + (blocked ? 'block' : 'info') + '">' +
+                '<div class="ni-head">' + (blocked ? '⛔ 無検品出荷 · 梱包進行不可' : '⚠ 無検品出荷 Tracking') + '</div>' +
+                '<div class="ni-body"><div class="ni-msg">' + msg + '</div>' + blocks + '</div>' +
+                '<div class="ni-foot">' +
+                    (!blocked ? '<button type="button" class="ni-check">該当Trackingの項目をまとめてチェック</button>' : '') +
+                    (blocked ? '<button type="button" class="ni-bypass">管理者確認済み・進行</button>' : '') +
+                    '<button type="button" class="ni-ok">確認 (Enter)</button>' +
+                '</div>' +
+            '</div>';
+        document.body.appendChild(ov);
+
+        const okBtn = ov.querySelector('.ni-ok');
+        okBtn.addEventListener('click', closePopup);
+        okBtn.focus();
+
+        const checkBtn = ov.querySelector('.ni-check');
+        if (checkBtn) {
+            checkBtn.addEventListener('click', () => {
+                const n = checkRowsOf(result.list.map((t) => t.trackingNo));
+                closePopup();
+                console.log('[無検品] まとめてチェック:', n, '行');
+            });
+        }
+        const bypassBtn = ov.querySelector('.ni-bypass');
+        if (bypassBtn) {
+            bypassBtn.addEventListener('click', () => {
+                if (!confirm('管理者が確認済みですか？\nこの出荷件の梱包完了を許可します。\n\n관리자 확인 후에만 진행하세요.')) return;
+                if (state) state.bypass = true;
+                closePopup();
+                packingModalEl.querySelectorAll('.ni-banner.block').forEach((el) => {
+                    el.textContent = '⚠ 管理者確認済み（無検品出荷 ' + NoInsp.BLOCK_MIN_COUNT + '件以上）— 進行許可';
+                });
+            });
+        }
+    }
+
+    // 팝업이 떠 있는 동안 Enter/Esc = 확인(닫기). 스캐너 Enter가 뒤로 새지 않게 막음
+    window.addEventListener('keydown', (e) => {
+        if (!document.getElementById('ni-overlay')) return;
+        if (e.key === 'Enter' || e.key === 'Escape') {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            closePopup();
+        }
+    }, true);
+
+    const isBlockedNow = () => !!(state && state.blocked && !state.bypass && isVisible());
+
+    // 포장완료 버튼 차단 (마우스 클릭 / 다른 스크립트의 btn.click())
+    window.addEventListener('click', (e) => {
+        const btn = e.target && e.target.closest && e.target.closest('#btnSavePacking');
+        if (!btn || !isBlockedNow()) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        showPopup(state.result, state.cur);
+    }, true);
+
+    // 중량칸 Enter → 사이트가 포장완료를 누르는 동작 차단
+    window.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' || !isBlockedNow()) return;
+        const t = e.target;
+        if (!t || !t.closest || !t.closest('#packingModal')) return;
+        if (t.id !== 'weight') return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        showPopup(state.result, state.cur);
+    }, true);
+
+    async function runCheck() {
+        const token = ++runToken;
+        state = null;
+        clearUI();
+
+        // 포장창 내용이 채워질 때까지 잠시 대기
+        let cur = readCurrent();
+        for (let i = 0; i < 20 && (!cur.deliveryNo || cur.trackings.length === 0); i++) {
+            await new Promise((r) => setTimeout(r, 150));
+            if (token !== runToken || !isVisible()) return;
+            cur = readCurrent();
+        }
+        if (!NoInsp.DELIVERY_NO_RE.test(cur.deliveryNo) || cur.trackings.length === 0) return;
+
+        state = { packingId: cur.packingId, cur: cur, result: null, blocked: false, bypass: false };
+        const body = packingModalEl.querySelector('.modal-body');
+        if (body) {
+            const w = document.createElement('div');
+            w.className = 'ni-banner err ni-wait';
+            w.style.cssText = 'border-width:1px; font-weight:400; padding:3px 10px;';
+            w.textContent = '無検品出荷 Tracking 確認中…';
+            body.prepend(w);
+        }
+        const result = await NoInsp.check(cur.trackings, { id: cur.packingId, deliveryNo: cur.deliveryNo, noInspection: cur.noInspection });
+        if (token !== runToken || !isVisible()) return;
+
+        state.result = result;
+        state.blocked = result.list.some((t) => t.blocked);
+        showBanner(result, cur);
+        markRows(result);
+        // 다른 스크립트가 표를 다시 그려도 표시가 남도록 몇 번 더 붙임
+        [400, 1200].forEach((ms) => setTimeout(() => { if (token === runToken && isVisible()) markRows(result); }, ms));
+        if (result.list.length > 0) showPopup(result, cur);
+    }
+
+    let wasVisible = isVisible();
+    new MutationObserver(() => {
+        const v = isVisible();
+        if (v === wasVisible) return;
+        wasVisible = v;
+        if (v) {
+            setTimeout(runCheck, 100);
+        } else {
+            runToken++;
+            state = null;
+            clearUI();
+        }
+    }).observe(packingModalEl, { attributes: true, attributeFilter: ['class', 'style'] });
 })();
