@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         [입고] JAN코드 화면 단축키 통합 (JAN이동 + Enter이동 + F1/F2/F3 + 합계패널)
+// @name         [입고] JAN코드 화면 단축키 통합 (JAN이동 + Enter이동 + F1/F2/F3 + 합계패널 + JAN 6자리강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.1
+// @version      1.4.0
 // @description  jancode 페이지 통합본. 원본: A-1-9(JAN 검색이동) + A-1-6(Enter 행이동) + A-1-7(F3) + A-1-8(F1) + A-1-10(F2)
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/store/jancode*
@@ -51,6 +51,15 @@
  * - 수정: 후보(커서 아래 칸 → 입고 창 → 창 안쪽 칸들 → 페이지 전체)를 차례로 움직여 보고
  *   "실제로 움직인 곳"이 나올 때까지 다음 후보로 넘어감. 버튼/F4/휠 모두 이 방식 사용.
  *   03번 스크립트가 켜져 있으면 화면 왼쪽 아래에 빨간 안내를 띄움.
+ *
+ * [v1.4.0 변경 사항] "입고화면에서 JAN 끝 6자리가 크게 안 보인다"
+ * - 원래 이 강조는 예전 "[통합] 플랫폼 포장 및 입고 업무 마스터 툴(V7.8)"이 해 주던 기능인데,
+ *   그 스크립트를 끄고 입고 스크립트를 01/02번으로 나누면서 JAN코드 화면(/admin/store/jancode)에서는
+ *   강조가 빠져 있었습니다. (01번은 운송장번호 화면에서만 동작)
+ * - 블록 8(신규): JAN코드 목록 표와 입고 창(#scan-tbody)의 JAN 칸에서 끝 6자리를
+ *   노란 바탕 + 빨간 굵은 글씨 + 1.35배 크기로 표시합니다. (V7.8과 같은 모양)
+ * - JAN 칸은 표 머리글("JAN")로 찾고, 못 찾으면 예전 위치(목록 4번째 칸 / 입고 창 3번째 칸)를 씁니다.
+ * - 화면이 바뀌거나 검색·페이지 이동으로 줄이 새로 그려져도 자동으로 다시 강조합니다.
  */
 
 (function() {
@@ -443,5 +452,61 @@
         w.style.cssText = 'position:fixed;left:10px;bottom:10px;z-index:20001;background:#dc2626;color:#fff;padding:8px 12px;border-radius:8px;font-size:13px;font-weight:700;max-width:420px;';
         document.body.appendChild(w);
     }, 1500);
+
+    /* ------------------------------------------------------------
+     * [블록 8] v1.4.0 — JAN코드 끝 6자리 강조 (목록 표 + 입고 창)
+     * ------------------------------------------------------------ */
+    (function janTailHighlightBlock() {
+        const highlightJanText = (cell) => {
+            if (!cell || cell.dataset.janHighlighted === 'true') return;
+            const targetNode = cell.querySelector('a') || cell;
+            const fullText = (targetNode.innerText || '').trim();
+            if (fullText.length < 10 || !/^\d+$/.test(fullText)) return; // 숫자만 있는 JAN 칸만
+            const head = fullText.slice(0, -6);
+            const tail = fullText.slice(-6);
+            targetNode.innerHTML = `${head}<span style="
+                color: #d32f2f !important;
+                background-color: #ffeb3b !important;
+                font-weight: 900 !important;
+                font-size: 1.35em !important;
+                padding: 0 3px !important;
+                border-radius: 3px !important;
+                letter-spacing: 1px !important;
+                display: inline-block !important;
+                line-height: 1.1 !important;
+            ">${tail}</span>`;
+            cell.dataset.janHighlighted = 'true';
+        };
+
+        // 표 머리글에서 "JAN" 칸 위치 찾기 (없으면 기본 위치)
+        const findJanIndex = (table, fallback) => {
+            if (!table) return fallback;
+            const ths = Array.from(table.querySelectorAll('thead tr:first-child th, thead tr:first-child td'));
+            const idx = ths.findIndex(th => /JAN/i.test((th.innerText || '').replace(/\s+/g, '')));
+            return idx >= 0 ? idx : fallback;
+        };
+
+        const run = () => {
+            // 1) 입고 창(#scan-tbody)
+            const scanBody = document.getElementById('scan-tbody');
+            if (scanBody) {
+                const idx = findJanIndex(scanBody.closest('table'), 2);
+                scanBody.querySelectorAll('tr').forEach(tr => highlightJanText(tr.cells[idx]));
+            }
+            // 2) JAN코드 목록 표
+            document.querySelectorAll('.content-wrapper table').forEach(table => {
+                if (scanBody && table.contains(scanBody)) return;
+                const tb = table.querySelector('tbody');
+                if (!tb) return;
+                const idx = findJanIndex(table, 3);
+                tb.querySelectorAll('tr').forEach(tr => highlightJanText(tr.cells[idx]));
+            });
+        };
+
+        let timer = null;
+        const schedule = () => { clearTimeout(timer); timer = setTimeout(run, 80); };
+        run();
+        new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+    })();
 
 })();
