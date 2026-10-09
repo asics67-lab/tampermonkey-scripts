@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.8.0
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금).
+// @version      1.8.1
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -62,6 +62,12 @@
  *  v1.6.1 (요청: "중복되는 경우에만")
  *  - 상단 박스·로케이션 배지는 무검품출하 Tracking이 다른 출고요청에도 들어가 있을 때(중복)만 표시.
  *    제목 옆 "無検品出荷" 라벨은 무검품출하 출고건이면 그대로 표시.
+ *
+ *  v1.8.1 (보고: "피킹리스트 인쇄 로딩(검은 화면 수집 단계)이 아직도 너무 느리다")
+ *  - 원인: 관리/03-포장출고/packing-tools.user.js(1.1.1 이하) 안에 옛 피킹리스트(V75.2)가 남아 있고,
+ *    두 스크립트가 같은 id의 "🔥 통합 초광속 수집" 버튼을 만듦. 옛 쪽이 먼저 실행되면 이 스크립트는
+ *    버튼을 만들지 않아서, 출고건을 하나씩 순서대로 읽고 종합관리 검색까지 기다리는 느린 옛 방식으로 인쇄됨.
+ *  - 수정: 이 스크립트가 만든 버튼이 아니면 지우고 이 스크립트의 버튼으로 교체. (관리/03 쪽도 1.2.0에서 옛 블록 중지)
  * ============================================================
  */
 
@@ -140,7 +146,15 @@
     }
 
     function injectCustomButton() {
-        if (document.getElementById('custom-picking-btn')) return;
+        // [v1.8.1] 옛 피킹리스트(관리/03-포장출고 packing-tools 1.1.1 이하 안의 V75.2)가 같은 id의 버튼을
+        // 먼저 만들어 두면, 지금까지는 이 스크립트가 버튼을 안 만들어서 느린 옛 방식으로 인쇄되었음.
+        // → 이 스크립트가 만든 버튼이 아니면 지우고 이 스크립트 버튼으로 바꿈.
+        const existingBtn = document.getElementById('custom-picking-btn');
+        if (existingBtn) {
+            if (existingBtn.dataset.tmOwner === 'picking-list-tools') return;
+            console.warn('[피킹리스트] 옛 피킹리스트 버튼을 발견해 새 버튼으로 교체합니다. (관리/03-포장출고 packing-tools를 1.2.0 이상으로 업데이트하세요)');
+            existingBtn.remove();
+        }
 
         let targetArea = document.getElementById('btnDownloadPickingList');
 
@@ -154,6 +168,7 @@
         if (targetArea) {
             const customBtn = document.createElement('button');
             customBtn.id = 'custom-picking-btn';
+            customBtn.dataset.tmOwner = 'picking-list-tools';
             customBtn.type = 'button';
             customBtn.innerHTML = '🔥 통합 초광속 수집';
             customBtn.className = 'btn btn-danger btn-sm waves-effect';
