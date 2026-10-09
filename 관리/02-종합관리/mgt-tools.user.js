@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [관리] 종합관리 통합 도구 (오류메시지 히스토리 + 상세검색 UI개선 + 엔터키검색 + 회원선택 엔터)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.1.1
+// @version      1.1.2
 // @description  종합관리(mgt/index) 및 출고 오류(shipping/error) 화면 통합본. 원본: 오류 메시지 로컬 자동 백업 및 히스토리 추적 시스템 v10.5 + 상세검색 UI 개선 스크립트 v20.0 + 상세검색 엔터키 활성화 v1.0
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/mgt/index*
@@ -15,6 +15,11 @@
 // @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/02-종합관리/mgt-tools.user.js
 // @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/02-종합관리/mgt-tools.user.js
 // ==/UserScript==
+// [v1.1.2] 스크립트를 켜면 엑셀 다운로드가 안 되던 문제 수정
+//   - 원인: 상세검색 UI를 재배치할 때 검색폼 내용을 통째로 지우고(innerHTML='') 드롭다운을 버튼으로 교체하면서
+//     원래 드롭다운(#status 등)과 숨은 입력값까지 사라짐 → 사이트의 엑셀 다운로드가 이 값들을 못 찾음
+//   - 수정: 원래 드롭다운은 숨긴 채로 남겨두고 버튼을 누르면 값을 같이 바꿔줌,
+//           재배치에 쓰지 않는 원래 요소(숨은 값·엑셀 버튼 등)는 지우지 않고 보관
 // [www 없는 주소 대응] platform.co.jp(www 없이) 로 접속해도 동작하도록 @match 추가, 사이트 내부 요청 주소를 현재 접속 주소 기준(location.origin)으로 변경
 
 /*
@@ -499,20 +504,37 @@
 
         const btnGroup = document.createElement('div');
         btnGroup.className = 'status-button-group';
+        // [v1.1.2] 원래 드롭다운은 지우지 않고 숨겨서 함께 보관 (엑셀 다운로드 등 사이트 기능이 이 값을 읽음)
+        //          → 서버로 보내는 값은 원래 드롭다운이 담당하고, 버튼은 그 값을 바꿔주는 역할만 함
+        selectEl.dataset.uiRadioGroup = groupName;
         options.forEach((opt, idx) => {
             const val = opt.value; const text = opt.text;
             let buttonText = text;
             if (val === "" || text.includes('--') || text.includes('---')) buttonText = "전체";
             const radioId = `custom_${groupName}_radio_${idx}`;
             const radio = document.createElement('input');
-            radio.type = 'radio'; radio.name = groupName; radio.id = radioId; radio.value = val; radio.className = 'status-radio-input';
+            radio.type = 'radio'; radio.name = 'ui_radio_' + groupName; radio.dataset.group = groupName; radio.id = radioId; radio.value = val; radio.className = 'status-radio-input';
+            radio.addEventListener('change', () => { if (radio.checked) syncRadioToSelect(radio); });
             if (val === currentValue || opt.hasAttribute('selected')) radio.checked = true;
             const btnLabel = document.createElement('label');
             btnLabel.htmlFor = radioId; btnLabel.className = 'status-btn-label'; btnLabel.innerText = buttonText;
             btnGroup.appendChild(radio); btnGroup.appendChild(btnLabel);
         });
         newContainer.appendChild(btnGroup);
+        const hiddenSelectWrap = document.createElement('div');
+        hiddenSelectWrap.style.display = 'none';
+        hiddenSelectWrap.appendChild(selectEl);
+        newContainer.appendChild(hiddenSelectWrap);
         return newContainer;
+    }
+
+    // [v1.1.2] 버튼 선택 → 숨겨둔 원래 드롭다운 값도 같이 변경
+    function syncRadioToSelect(radio) {
+        const sel = document.querySelector(`select[data-ui-radio-group="${radio.dataset.group}"]`);
+        if (!sel || sel.value === radio.value) return;
+        sel.value = radio.value;
+        if (window.jQuery) window.jQuery(sel).trigger('change');
+        else sel.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
     let executed = false;
@@ -591,8 +613,21 @@
         });
         if(dateRange) { dateRange.classList.remove('col-lg-6'); dateRange.classList.add('col-lg-6', 'mb-2'); }
 
-        form.innerHTML = '';
-        form.innerHTML = `<input type="hidden" name="pagesize" id="pagesize" value="20"><input type="hidden" name="action" id="action" value="search">`;
+        // [v1.1.2] 예전엔 form.innerHTML = '' 로 폼 내용을 전부 지웠음 → 숨은 입력값·엑셀 관련 요소까지 사라짐
+        //          이제는 원래 내용을 '보관함'(화면에 안 보이는 칸)으로 옮겨두고, 필요한 요소만 꺼내서 재배치함
+        const preservedBox = document.createElement('div');
+        preservedBox.id = 'ui-preserved-original-fields';
+        preservedBox.style.display = 'none';
+        while (form.firstChild) preservedBox.appendChild(form.firstChild);
+        form.appendChild(preservedBox);
+
+        // 원래 폼에 엑셀/CSV/다운로드 버튼이 있었다면 숨기지 않고 검색 버튼 줄로 꺼내서 보이게 함
+        const rescuedBtns = Array.from(preservedBox.querySelectorAll('button, a, input[type="button"], input[type="submit"]'))
+            .filter(b => !(buttonRow && buttonRow.contains(b)))
+            .filter(b => /excel|xls|csv|download|엑셀|다운|エクセル|ダウンロード/i.test((b.innerText || b.value || '') + ' ' + (b.id || '') + ' ' + (b.className || '') + ' ' + (b.getAttribute('href') || '') + ' ' + (b.getAttribute('onclick') || '')));
+
+        if (!form.querySelector('#pagesize')) form.insertAdjacentHTML('afterbegin', `<input type="hidden" name="pagesize" id="pagesize" value="20">`);
+        if (!form.querySelector('#action')) form.insertAdjacentHTML('afterbegin', `<input type="hidden" name="action" id="action" value="search">`);
 
         const importantRow = document.createElement('div');
         importantRow.className = 'row important-search-box';
@@ -679,6 +714,13 @@
         renderLayoutByOrderArray(savedOrder);
 
         if (buttonRow) form.appendChild(buttonRow);
+        if (rescuedBtns.length) {
+            const rescueRow = document.createElement('div');
+            rescueRow.className = 'd-flex flex-wrap gap-2 mt-2';
+            rescuedBtns.forEach(b => rescueRow.appendChild(b));
+            form.appendChild(rescueRow);
+        }
+        form.appendChild(preservedBox); // 보관함은 항상 맨 뒤로
 
         function getCurrentOrderList() {
             return Array.from(importantRow.querySelectorAll('.draggable-item'))
@@ -797,7 +839,8 @@
                 setTimeout(() => {
                     const allRadios = form.querySelectorAll('.status-radio-input');
                     allRadios.forEach(r => {
-                        if (r.name === 'country') { r.checked = (r.value === "KR"); } else { r.checked = (r.value === ""); }
+                        if (r.dataset.group === 'country') { r.checked = (r.value === "KR"); } else { r.checked = (r.value === ""); }
+                        if (r.checked) syncRadioToSelect(r);
                     });
                 }, 10);
             });
