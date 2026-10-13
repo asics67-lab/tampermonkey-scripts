@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.8.1
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정.
+// @version      1.9.0
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정. v1.9.0: 속도 개선 - LH/OH 확인을 데이터 수집과 동시에 시작(수집 끝날 때까지 기다리지 않음), 동시 확인 3→4건(종합관리 검색 한도와 맞춤), 확인 중에도 인쇄 버튼을 누를 수 있게 변경(누르면 확인창), 걸린 시간을 콘솔에 기록.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -796,7 +796,10 @@
                             // [v1.8.0] 이 확인(종합관리 검색)이 전체 시간의 대부분이라
                             // 여기서 기다리지 않고, 피킹리스트를 먼저 띄운 뒤 나중에 채워 넣음
                             checkPending = true;
-                            checkTasks.push({ id: task.id, outNum: task.outNum, tArr: Array.from(tSet), isNoInspection: isNoInspection });
+                            const ct = { id: task.id, outNum: task.outNum, tArr: Array.from(tSet), isNoInspection: isNoInspection };
+                            // [v1.9.0] 수집이 다 끝날 때까지 기다리지 않고 바로 확인 시작
+                            ct.promise = startCheck(ct);
+                            checkTasks.push(ct);
                         }
                     }
 
@@ -838,21 +841,53 @@
 
     // [v1.8.0] 피킹리스트를 띄운 뒤, LH/OH 건의 같은 Tracking·무검품출하 확인을 이어서 진행하고
     // 끝나는 대로 인쇄 창에 채워 넣음 (확인이 다 끝날 때까지 인쇄 버튼은 "確認中" 으로 잠김)
-    async function runDeferredChecks(printWin, checkTasks) {
-        await runLimited(checkTasks, 3, async (t) => {
-            if (printWin.closed) return;
+    // [v1.9.0] 확인 작업 동시 실행 한도 (종합관리 검색 한도 MGT_MAX_PARALLEL 과 맞춤)
+    const CHECK_MAX_PARALLEL = 4;
+    let checkActive = 0;
+    const checkWaiting = [];
+    function withCheckSlot(fn) {
+        return new Promise((resolve, reject) => {
+            const run = () => {
+                checkActive++;
+                Promise.resolve().then(fn).then(resolve, reject).finally(() => {
+                    checkActive--;
+                    const next = checkWaiting.shift();
+                    if (next) next();
+                });
+            };
+            if (checkActive < CHECK_MAX_PARALLEL) run(); else checkWaiting.push(run);
+        });
+    }
+    let checkRunStartedAt = 0;
+    function startCheck(t) {
+        if (!checkRunStartedAt) checkRunStartedAt = performance.now();
+        return withCheckSlot(async () => {
+            const t0 = performance.now();
             const [st, ni] = await Promise.all([
                 findSameTrackingOrders(t.tArr),
                 NoInsp.check(t.tArr, { id: t.id, deliveryNo: t.outNum, noInspection: t.isNoInspection })
                     .then(r => ({ list: r.list.filter(x => x.duplicate || x.blocked), error: r.error, current: t.isNoInspection }))
                     .catch(e => ({ list: [], error: String(e.message || e), current: t.isNoInspection }))
             ]);
+            console.log('[피킹리스트] 확인 ' + t.outNum + ' (Tracking ' + t.tArr.length + '개) ' + ((performance.now() - t0) / 1000).toFixed(1) + '초');
+            return { st: st, ni: ni };
+        }).catch(e => ({
+            st: { list: [], error: String(e.message || e) },
+            ni: { list: [], error: String(e.message || e), current: t.isNoInspection }
+        }));
+    }
+
+    async function runDeferredChecks(printWin, checkTasks) {
+        await Promise.all(checkTasks.map(async (t) => {
+            const r = await t.promise;
             try {
                 if (!printWin.closed && typeof printWin.applyCheck === 'function') {
-                    printWin.applyCheck(JSON.stringify({ outNum: t.outNum, sameTracking: st, noInsp: ni }));
+                    printWin.applyCheck(JSON.stringify({ outNum: t.outNum, sameTracking: r.st, noInsp: r.ni }));
                 }
             } catch (e) { console.error('[피킹리스트] 확인 결과 반영 실패', e); }
-        });
+        }));
+        console.log('[피킹리스트] LH/OH 확인 ' + checkTasks.length + '건 전체 ' + ((performance.now() - checkRunStartedAt) / 1000).toFixed(1) + '초');
+        checkRunStartedAt = 0;
     }
 
     function showOverlay(msg) {
@@ -902,7 +937,7 @@
         </style>`;
 
         printWin.document.write(`<html><head>${style}<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script></head><body>
-            <div class="no-print" style="position:fixed; top:10px; right:10px; z-index:1000;"><button id="print-btn" onclick="window.print()" style="padding:4px 10px; background:#ff3e1d; color:white; border-radius:4px; font-weight:bold; border:none; cursor:pointer;">🖨️ 印刷</button></div>
+            <div class="no-print" style="position:fixed; top:10px; right:10px; z-index:1000;"><button id="print-btn" onclick="tryPrint()" style="padding:4px 10px; background:#ff3e1d; color:white; border-radius:4px; font-weight:bold; border:none; cursor:pointer;">🖨️ 印刷</button></div>
             <div id="content-area"></div>
             <script>
                 const groups = ${safeData};
@@ -1277,11 +1312,18 @@
                     const b = document.getElementById('print-btn');
                     if (!b) return;
                     const busy = checksDone < checksTotal;
-                    b.disabled = busy;
+                    // [v1.9.0] 확인 중에도 누를 수 있음 (누르면 확인창)
                     b.style.background = busy ? '#999' : '#ff3e1d';
-                    b.style.cursor = busy ? 'wait' : 'pointer';
+                    b.style.cursor = 'pointer';
                     b.textContent = busy ? '⏳ 確認中 (' + checksDone + ' / ' + checksTotal + ')' : '🖨️ 印刷';
                 }
+                window.tryPrint = function () {
+                    if (checksDone < checksTotal) {
+                        const ok = confirm('同一Tracking・無検品出荷の確認がまだ終わっていません (' + checksDone + ' / ' + checksTotal + ')。\\n確認が終わっていない出荷件には警告が印刷されません。\\n\\nこのまま印刷しますか？');
+                        if (!ok) return;
+                    }
+                    window.print();
+                };
                 window.applyCheck = function (json) {
                     const r = JSON.parse(json);
                     groups.forEach(g => {
