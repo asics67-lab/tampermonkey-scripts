@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.9.0
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정. v1.9.0: 속도 개선 - LH/OH 확인을 데이터 수집과 동시에 시작(수집 끝날 때까지 기다리지 않음), 동시 확인 3→4건(종합관리 검색 한도와 맞춤), 확인 중에도 인쇄 버튼을 누를 수 있게 변경(누르면 확인창), 걸린 시간을 콘솔에 기록.
+// @version      1.9.1
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정. v1.9.0: 속도 개선 - LH/OH 확인을 데이터 수집과 동시에 시작(수집 끝날 때까지 기다리지 않음), 동시 확인 3→4건(종합관리 검색 한도와 맞춤), 확인 중에도 인쇄 버튼을 누를 수 있게 변경(누르면 확인창), 걸린 시간을 콘솔에 기록. v1.9.1: 같은 상품이 따로 입고돼 같은 로케이션에 여러 건 있을 때 로케이션 개수가 1개로만 나오던 문제 수정(로케이션별 개수 합산, 예: Q19 : 2個).
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -634,6 +634,39 @@
         return "未指定";
     }
 
+    // [v1.9.1] "Q19 : 1個<br>F1-2-4 : 3個" 형태를 [{name, qty}]로 분해
+    function parseLocEntries(locStr, fallbackQty) {
+        const lines = String(locStr || '').split(/<br\s*\/?>/i).map(x => x.trim()).filter(Boolean);
+        const out = [];
+        lines.forEach(line => {
+            const m = line.match(/^(.*?)\s*:\s*(\d+)\s*(個|개)\s*$/);
+            if (m) out.push({ name: m[1].trim(), qty: parseInt(m[2]) });
+            else out.push({ name: line, qty: null });
+        });
+        // 개수가 안 적힌 줄이 하나뿐이면 상품 수량을 그대로 씀
+        if (out.length === 1 && out[0].qty === null) out[0].qty = fallbackQty;
+        return out;
+    }
+
+    // [v1.9.1] 두 로케이션 문자열을 합쳐서, 같은 로케이션은 개수를 더함
+    // 예) "Q19 : 1個" + "Q19 : 1個" → "Q19 : 2個"
+    function mergeLocations(locA, qtyA, locB, qtyB) {
+        const map = new Map();
+        const add = (e) => {
+            if (map.has(e.name)) {
+                const cur = map.get(e.name);
+                cur.qty = (cur.qty === null || e.qty === null) ? null : cur.qty + e.qty;
+            } else {
+                map.set(e.name, { name: e.name, qty: e.qty });
+            }
+        };
+        parseLocEntries(locA, qtyA).forEach(add);
+        parseLocEntries(locB, qtyB).forEach(add);
+        return Array.from(map.values())
+            .map(e => e.qty === null ? e.name : `${e.name} : ${e.qty}個`)
+            .join('<br>');
+    }
+
     async function startApiHarvest(checkedBoxes) {
         showOverlay(`🚀 데이터를 수집하여 이중 정렬 가공 중...`);
         const collectedGroups = [];
@@ -721,9 +754,8 @@
                         if (combinedMap.has(key)) {
                             const existing = combinedMap.get(key);
                             existing.qty += item.qty;
-                            if (existing.location !== item.location && !existing.location.includes(item.location)) {
-                                existing.location += `<br>${item.location}`;
-                            }
+                            // [v1.9.1] 같은 로케이션이면 문자열을 버리지 않고 로케이션별 개수를 더함
+                            existing.location = mergeLocations(existing.location, existing.qty - item.qty, item.location, item.qty);
                         } else {
                             combinedMap.set(key, { ...item });
                         }
@@ -740,7 +772,9 @@
                                 // [수정] 여기도 잔코드만으로 합치던 것을 잔코드+상품명 기준으로 변경.
                                 const kujiKey = `${item.janCode}_${item.productName.trim()}`;
                                 if (kujiMap.has(kujiKey)) {
-                                    kujiMap.get(kujiKey).qty += item.qty;
+                                    const kx = kujiMap.get(kujiKey);
+                                    kx.location = mergeLocations(kx.location, kx.qty, item.location, item.qty);
+                                    kx.qty += item.qty;
                                 } else {
                                     kujiMap.set(kujiKey, item);
                                     filteredItems.push(item);
