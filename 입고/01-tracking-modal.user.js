@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] 트래킹넘버 모달 통합 (마스터패치본 + 회원명고정 + 하이픈표시 + JAN강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.3
+// @version      1.4.0
 // @description  입고 처리 모달(trackingno) 및 라벨 인쇄(locationlabel) 화면 통합본. 원본: A-1-13(베이스) + A-1-2(회원명 고정) + A-1-3(하이픈 표시) + A-1-12 중 입고 JAN강조 발췌
 // @author       물류팀
 // @match        https://platform.aispel.com/admin/store/trackingno*
@@ -56,6 +56,12 @@
  *    원인: 이 스크립트가 원본 라벨 페이지(/admin/print/locationlabel/)를 무조건 차단·종료함.
  *    해결: 목록 Print 클릭을 가로채서 해당 행 정보로 55x45 커스텀 라벨을 만들어 인쇄.
  *
+ *  v1.4.0 수정 사항 (2026-10-14)
+ *  - 엔드유저 발송 업체(END_USER_COMPANIES 목록) 회원 라벨에 "END USER" 워터마크 추가.
+ *    흑백 프린터용으로 속이 빈 테두리 글씨를 라벨 뒤에 비스듬히 깔고, 업체명을 작게 함께 표시.
+ *    스캔 입고 라벨과 목록 Print(재출력) 라벨 모두 적용. QR 부분은 흰 바탕이라 인식에 영향 없음.
+ *    업체 추가/삭제는 아래 END_USER_COMPANIES 목록만 고치면 됨.
+ *
  *  v1.3.3 수정 사항 (2026-10-07)
  *  - 합배송(트래킹 2개 이상이 한 출고번호로 묶인 건)인데도 라벨에 출고번호가 찍히던 문제 수정.
  *    원인: 트래킹 개수를 포장목록의 "한 줄" 안에서만 셌음. 합배송이 트래킹별로 여러 줄로
@@ -71,6 +77,26 @@
 
 (function() {
     'use strict';
+
+    /* ------------------------------------------------------------
+     * [설정] 엔드유저 발송 업체 목록 (v1.4.0)
+     * 여기 적힌 회원번호의 입고 라벨에는 "END USER" 워터마크가 찍힙니다.
+     * 업체를 추가할 때는 '회원번호': '업체명', 형식으로 한 줄 추가하면 됩니다.
+     * ------------------------------------------------------------ */
+    const END_USER_COMPANIES = {
+        '1005': 'MAIDO',          // 마이도
+        '1008': 'TOKYOSTORE',     // 도쿄상점
+        '1032': 'COUNTRY HOUSE',  // 컨츄리하우스
+        '1041': 'KIM ILJI',       // 김일지
+        '1320': 'TOKYO MONKEY',   // 도쿄몽키
+        '1532': 'CAPTAINARCADE',  // 캡틴오락실
+        '1783': 'bonbon shop',    // 봉봉쇼퍼
+        '2246': 'COCO TOKYO',     // 코코도쿄스타일
+    };
+    function getEndUserCompanyName(userNo) {
+        const key = String(userNo || '').replace(/[^0-9]/g, '');
+        return END_USER_COMPANIES[key] || '';
+    }
 
     /* ------------------------------------------------------------
      * [블록 1] A-1-13 마스터 로직
@@ -299,9 +325,14 @@
                 const lhText = lh || '미출고 / 일반입고';
                 const lhStyle = (lh && !isShouhinda) ? '' : 'font-size: 20px !important; font-weight: 900 !important; white-space: nowrap !important; letter-spacing: -0.5px !important; word-break: keep-all !important; display: inline-block !important; text-align: center !important; width: 100% !important;';
                 const lhGroupStyle = (lh && !isShouhinda) ? '' : 'width: 100% !important; text-align: center !important; justify-content: center !important; align-items: center !important; max-width: 100% !important;';
+                const endUserName = getEndUserCompanyName(label.userNo);
+                const endUserMark = endUserName
+                    ? `<div class="eu-mark"><div class="eu-mark-inner"><span class="eu-text">END USER</span></div></div>`
+                    : '';
                 labelsHTML += `
                     <div class="page">
-                        <div class="container">
+                        <div class="container${endUserName ? ' is-enduser' : ''}">
+                            ${endUserMark}
                             <div class="header-sec">
                                 <div class="lh-info-group" style="${lhGroupStyle}">
                                     <span class="lh-no" style="${lhStyle}">${lhText}</span>
@@ -317,7 +348,7 @@
                                             <span class="track-main">${trNo.length > 4 ? trNo.slice(0, -4) : ''}</span>
                                             <span class="track-bold">${trNo.slice(-4)}</span>
                                         </div>
-                                        <span class="box-num">(${label.boxIndex || (i + 1) + '/' + labels.length})</span>
+                                        <span class="box-num">(${label.boxIndex || (i + 1) + '/' + labels.length})</span>${endUserName ? `<span class="eu-name">${endUserName}</span>` : ''}
                                     </div>
                                     <div class="footer-info" style="margin-top: 1mm;">
                                         <span style="font-size: 18px; font-weight: 900; color: #000; display: block; line-height: 1;">ID: ${label.userNo}</span>
@@ -362,7 +393,15 @@
                         .box-num { font-size: 16px; color: blue; font-weight: bold; }
                         .bottom-right { display: flex; flex-direction: column; justify-content: space-between; align-items: center; width: 14mm; height: 100%; }
                         .qr-big { width: 12mm; height: 12mm; display: flex; align-items: center; justify-content: center; background: #fff; }
-                        @media print { .no-print { display: none; } .page { padding: 0; } }
+                        /* [v1.4.0] END USER 워터마크 — 흑백 프린터용 테두리 글씨, 내용 뒤에 깔림 */
+                        .eu-mark { position: absolute; inset: 0; z-index: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+                        .eu-mark-inner { transform: translateX(-3mm) rotate(-18deg); line-height: 1; }
+                        .eu-text { font-family: "Arial Black", "Arial", sans-serif; font-size: 7.5mm; font-weight: 900; white-space: nowrap; color: transparent; -webkit-text-stroke: 0.22mm #000; letter-spacing: 0.3mm; }
+                        .eu-name { font-size: 9px; letter-spacing: -0.2px; font-weight: 900; color: #fff; background: #000; padding: 1px 3px; margin-left: 3px; border-radius: 2px; vertical-align: 2px; white-space: nowrap; }
+                        .container > .header-sec, .container > .loc-sec, .container > .bottom-sec { position: relative; z-index: 1; }
+                        .is-enduser .loc-sec { background: transparent; }
+                        .is-enduser .qr-small, .is-enduser .qr-big { position: relative; z-index: 2; }
+                        @media print { .no-print { display: none; } .page { padding: 0; } * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
                     </style>
                 </head>
                 <body>
