@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] 트래킹넘버 모달 통합 (마스터패치본 + 회원명고정 + 하이픈표시 + JAN강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.4.0
+// @version      1.4.1
 // @description  입고 처리 모달(trackingno) 및 라벨 인쇄(locationlabel) 화면 통합본. 원본: A-1-13(베이스) + A-1-2(회원명 고정) + A-1-3(하이픈 표시) + A-1-12 중 입고 JAN강조 발췌
 // @author       물류팀
 // @match        https://platform.aispel.com/admin/store/trackingno*
@@ -55,6 +55,9 @@
  *  - 목록의 "Print"(라벨 재출력)를 눌러도 인쇄가 안 되던 문제 수정.
  *    원인: 이 스크립트가 원본 라벨 페이지(/admin/print/locationlabel/)를 무조건 차단·종료함.
  *    해결: 목록 Print 클릭을 가로채서 해당 행 정보로 55x45 커스텀 라벨을 만들어 인쇄.
+ *
+ *  v1.4.1 수정 사항 (2026-10-14)
+ *  - 출고번호(LH/LS/OH)가 찍히는 라벨에는 END USER 워터마크·업체명 표시를 넣지 않음.
  *
  *  v1.4.0 수정 사항 (2026-10-14)
  *  - 엔드유저 발송 업체(END_USER_COMPANIES 목록) 회원 라벨에 "END USER" 워터마크 추가.
@@ -325,7 +328,9 @@
                 const lhText = lh || '미출고 / 일반입고';
                 const lhStyle = (lh && !isShouhinda) ? '' : 'font-size: 20px !important; font-weight: 900 !important; white-space: nowrap !important; letter-spacing: -0.5px !important; word-break: keep-all !important; display: inline-block !important; text-align: center !important; width: 100% !important;';
                 const lhGroupStyle = (lh && !isShouhinda) ? '' : 'width: 100% !important; text-align: center !important; justify-content: center !important; align-items: center !important; max-width: 100% !important;';
-                const endUserName = getEndUserCompanyName(label.userNo);
+                // [v1.4.1] 출고번호(LH/LS/OH)가 찍히는 라벨은 END USER 표시 생략 (미출고/일반입고·商品代 일 때만 표시)
+                const hasDeliveryNo = !!lh && !isShouhinda;
+                const endUserName = hasDeliveryNo ? '' : getEndUserCompanyName(label.userNo);
                 const endUserMark = endUserName
                     ? `<div class="eu-mark"><div class="eu-mark-inner"><span class="eu-text">END USER</span></div></div>`
                     : '';
