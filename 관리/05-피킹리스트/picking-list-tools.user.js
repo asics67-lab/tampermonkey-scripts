@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.9.1
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정. v1.9.0: 속도 개선 - LH/OH 확인을 데이터 수집과 동시에 시작(수집 끝날 때까지 기다리지 않음), 동시 확인 3→4건(종합관리 검색 한도와 맞춤), 확인 중에도 인쇄 버튼을 누를 수 있게 변경(누르면 확인창), 걸린 시간을 콘솔에 기록. v1.9.1: 같은 상품이 따로 입고돼 같은 로케이션에 여러 건 있을 때 로케이션 개수가 1개로만 나오던 문제 수정(로케이션별 개수 합산, 예: Q19 : 2個).
+// @version      1.10.0
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정. v1.9.0: 속도 개선 - LH/OH 확인을 데이터 수집과 동시에 시작(수집 끝날 때까지 기다리지 않음), 동시 확인 3→4건(종합관리 검색 한도와 맞춤), 확인 중에도 인쇄 버튼을 누를 수 있게 변경(누르면 확인창), 걸린 시간을 콘솔에 기록. v1.9.1: 같은 상품이 따로 입고돼 같은 로케이션에 여러 건 있을 때 로케이션 개수가 1개로만 나오던 문제 수정(로케이션별 개수 합산, 예: Q19 : 2個). v1.10.0: 속도 개선 - 종합관리 조회는 무검품출하 출고건만 실행(중복 Tracking 경고만 인쇄). 일반 출고건의 같은 Tracking 묶음 표시는 제거(포장 화면 팝업에서 확인).
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -68,6 +68,13 @@
  *    두 스크립트가 같은 id의 "🔥 통합 초광속 수집" 버튼을 만듦. 옛 쪽이 먼저 실행되면 이 스크립트는
  *    버튼을 만들지 않아서, 출고건을 하나씩 순서대로 읽고 종합관리 검색까지 기다리는 느린 옛 방식으로 인쇄됨.
  *  - 수정: 이 스크립트가 만든 버튼이 아니면 지우고 이 스크립트의 버튼으로 교체. (관리/03 쪽도 1.2.0에서 옛 블록 중지)
+ *
+ *  v1.10.0 (요청: "무검품이 되어 있을 때만 종합관리에서 중복 Tracking 조회")
+ *  - 피킹리스트가 느린 가장 큰 원인은 LH/OH 건마다 Tracking별로 하던 종합관리 검색(1건 1~2초).
+ *  - 같은 Tracking 묶음·무검품 중복은 포장 화면(포장/packing-tools)에서 팝업으로 이미 확인하고 막으므로,
+ *    피킹리스트에서는 무검품출하 출고건만 종합관리 조회 → 중복이면 ⚠/⛔ 경고 박스 인쇄.
+ *  - 일반 출고건은 종합관리 조회를 하지 않음 → "🔗 同一Tracking" 박스·배지는 더 이상 나오지 않음.
+ *  - 제목 옆 "無検品出荷" 라벨은 그대로(검색 없이 포장 데이터로 표시).
  * ============================================================
  */
 
@@ -822,7 +829,8 @@
                     const isNoInspection = parseInt(packingData.no_inspection) === 1;
                     let noInsp = { list: [], error: '', current: isNoInspection };
                     let checkPending = false;
-                    if (DELIVERY_NO_PATTERN.test(task.outNum) && (task.type.includes('delivery') || tr?.innerText.includes('배송대행') || tr?.innerText.includes('배송 대행'))) {
+                    // [v1.10.0] 무검품출하 출고건만 종합관리 조회 (일반 건은 포장 화면 팝업에서 확인)
+                    if (isNoInspection && DELIVERY_NO_PATTERN.test(task.outNum) && (task.type.includes('delivery') || tr?.innerText.includes('배송대행') || tr?.innerText.includes('배송 대행'))) {
                         const tSet = new Set();
                         if (task.rowTracking) tSet.add(task.rowTracking);
                         processedItems.forEach(it => { if (it.tracking) tSet.add(it.tracking); });
@@ -897,12 +905,11 @@
         if (!checkRunStartedAt) checkRunStartedAt = performance.now();
         return withCheckSlot(async () => {
             const t0 = performance.now();
-            const [st, ni] = await Promise.all([
-                findSameTrackingOrders(t.tArr),
-                NoInsp.check(t.tArr, { id: t.id, deliveryNo: t.outNum, noInspection: t.isNoInspection })
-                    .then(r => ({ list: r.list.filter(x => x.duplicate || x.blocked), error: r.error, current: t.isNoInspection }))
-                    .catch(e => ({ list: [], error: String(e.message || e), current: t.isNoInspection }))
-            ]);
+            // [v1.10.0] 같은 Tracking 묶음 조회(findSameTrackingOrders)는 하지 않음 → 무검품 중복 확인만
+            const st = { list: [], error: '' };
+            const ni = await NoInsp.check(t.tArr, { id: t.id, deliveryNo: t.outNum, noInspection: t.isNoInspection })
+                .then(r => ({ list: r.list.filter(x => x.duplicate || x.blocked), error: r.error, current: t.isNoInspection }))
+                .catch(e => ({ list: [], error: String(e.message || e), current: t.isNoInspection }));
             console.log('[피킹리스트] 확인 ' + t.outNum + ' (Tracking ' + t.tArr.length + '개) ' + ((performance.now() - t0) / 1000).toFixed(1) + '초');
             return { st: st, ni: ni };
         }).catch(e => ({
@@ -1083,7 +1090,7 @@
 
                 function sameTrackingHtml(g) {
                     if (g.checkPending) {
-                        return '<div class="no-print" style="border:2px dashed #7b1fa2; background:#f8f0fc; color:#7b1fa2; padding:5px 8px; margin:0 0 8px 0; font-weight:bold; font-size:12px;">🔄 同一Tracking・無検品出荷を確認中…</div>';
+                        return '<div class="no-print" style="border:2px dashed #7b1fa2; background:#f8f0fc; color:#7b1fa2; padding:5px 8px; margin:0 0 8px 0; font-weight:bold; font-size:12px;">🔄 無検品出荷Trackingの重複を確認中…</div>';
                     }
                     const st = g.sameTracking || { list: [], error: '' };
                     let out = '';
@@ -1353,7 +1360,7 @@
                 }
                 window.tryPrint = function () {
                     if (checksDone < checksTotal) {
-                        const ok = confirm('同一Tracking・無検品出荷の確認がまだ終わっていません (' + checksDone + ' / ' + checksTotal + ')。\\n確認が終わっていない出荷件には警告が印刷されません。\\n\\nこのまま印刷しますか？');
+                        const ok = confirm('無検品出荷Trackingの確認がまだ終わっていません (' + checksDone + ' / ' + checksTotal + ')。\\n確認が終わっていない出荷件には警告が印刷されません。\\n\\nこのまま印刷しますか？');
                         if (!ok) return;
                     }
                     window.print();
