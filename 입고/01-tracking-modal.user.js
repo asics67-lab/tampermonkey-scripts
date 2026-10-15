@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] 트래킹넘버 모달 통합 (마스터패치본 + 회원명고정 + 하이픈표시 + JAN강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.4.1
+// @version      1.4.2
 // @description  입고 처리 모달(trackingno) 및 라벨 인쇄(locationlabel) 화면 통합본. 원본: A-1-13(베이스) + A-1-2(회원명 고정) + A-1-3(하이픈 표시) + A-1-12 중 입고 JAN강조 발췌
 // @author       물류팀
 // @match        https://platform.aispel.com/admin/store/trackingno*
@@ -56,6 +56,9 @@
  *    원인: 이 스크립트가 원본 라벨 페이지(/admin/print/locationlabel/)를 무조건 차단·종료함.
  *    해결: 목록 Print 클릭을 가로채서 해당 행 정보로 55x45 커스텀 라벨을 만들어 인쇄.
  *
+ *  v1.4.2 수정 사항 (2026-10-15)
+ *  - 엔드유저 업체 추가: 1240 cherry tree
+ *
  *  v1.4.1 수정 사항 (2026-10-14)
  *  - 출고번호(LH/LS/OH)가 찍히는 라벨에는 END USER 워터마크·업체명 표시를 넣지 않음.
  *
@@ -90,6 +93,7 @@
         '1005': 'MAIDO',          // 마이도
         '1008': 'TOKYOSTORE',     // 도쿄상점
         '1032': 'COUNTRY HOUSE',  // 컨츄리하우스
+        '1240': 'cherry tree',    // 체리트리 (v1.4.2 추가)
         '1041': 'KIM ILJI',       // 김일지
         '1320': 'TOKYO MONKEY',   // 도쿄몽키
         '1532': 'CAPTAINARCADE',  // 캡틴오락실
