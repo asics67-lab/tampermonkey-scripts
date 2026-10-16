@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] 트래킹넘버 모달 통합 (마스터패치본 + 회원명고정 + 하이픈표시 + JAN강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.4.2
+// @version      1.4.3
 // @description  입고 처리 모달(trackingno) 및 라벨 인쇄(locationlabel) 화면 통합본. 원본: A-1-13(베이스) + A-1-2(회원명 고정) + A-1-3(하이픈 표시) + A-1-12 중 입고 JAN강조 발췌
 // @author       물류팀
 // @match        https://platform.aispel.com/admin/store/trackingno*
@@ -55,6 +55,13 @@
  *  - 목록의 "Print"(라벨 재출력)를 눌러도 인쇄가 안 되던 문제 수정.
  *    원인: 이 스크립트가 원본 라벨 페이지(/admin/print/locationlabel/)를 무조건 차단·종료함.
  *    해결: 목록 Print 클릭을 가로채서 해당 행 정보로 55x45 커스텀 라벨을 만들어 인쇄.
+ *
+ *  v1.4.3 수정 사항 (2026-10-16)
+ *  - 합배송인데 라벨에 출고번호가 찍히던 문제 재수정 (예: LH284528278).
+ *    원인: 포장목록 한 줄에는 첫 상품의 트래킹 1개만 표시됨 → 상품별로 트래킹이 다른 합배송을
+ *          트래킹 1개짜리 단독 출고로 판단.
+ *    해결: 출고건 상세(ajax_get_packing)의 상품별 트래킹을 모두 확인해서 2개 이상이면 출고번호를 비움.
+ *          스캔 입고 라벨, 목록 Print(재출력) 라벨 모두 적용. 상세 조회 실패 시에도 출고번호를 비움.
  *
  *  v1.4.2 수정 사항 (2026-10-15)
  *  - 엔드유저 업체 추가: 1240 cherry tree
@@ -290,6 +297,53 @@
                 return '';
             }
             return matchedItems[0].delivery_no || '';
+        }
+        /* [v1.4.3] 포장목록 행에는 첫 상품의 트래킹 1개만 보여서, 상품이 여러 트래킹으로 나뉜 합배송을
+         * 단독 출고로 오판했음 (예: LH284528278 — 행에는 1개, 실제로는 트래킹 4개).
+         * 출고건 상세(ajax_get_packing)의 상품별 트래킹을 모두 모아서, 2개 이상이면 출고번호를 비움.
+         * 상세 조회에 실패하면 잘못된 출고번호가 찍히지 않도록 안전하게 비움. */
+        const packingDetailCache = {};
+        async function fetchPackingTrackings(type, id) {
+            const key = type + ':' + id;
+            if (packingDetailCache[key]) return packingDetailCache[key];
+            const res = await fetch(window.location.origin + '/admin/shipping/ajax_get_packing', {
+                method: 'POST',
+                headers: {
+                    'X-CSRF-TOKEN': getCsrfToken(),
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                },
+                body: 'type=' + encodeURIComponent(type || 'delivery') + '&id=' + encodeURIComponent(id)
+            });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const json = await res.json();
+            const packing = (json && json.packing) || {};
+            const set = new Set();
+            (packing.order_form_delivery_details || []).forEach(d => {
+                const c = cleanStr(d && d.tracking_no);
+                if (c) set.add(c);
+            });
+            const list = [...set];
+            packingDetailCache[key] = list;
+            return list;
+        }
+        async function getMatchedLHNumberChecked(trackingNo) {
+            const lh = getMatchedLHNumber(trackingNo);
+            if (!lh) return '';
+            const cleanT = cleanStr(trackingNo);
+            const item = shippingDatabase.find(it => cleanStr(it.tracking_no) === cleanT && it.id);
+            if (!item) return lh;
+            try {
+                const trackings = await fetchPackingTrackings(item.type, item.id);
+                if (trackings.length > 1) {
+                    console.log('[Tampermonkey] 합배송(상세 기준) → 라벨에 출고번호 미표시:', trackingNo, lh, trackings);
+                    return '';
+                }
+                return lh;
+            } catch (e) {
+                console.error('[Tampermonkey] 출고 상세 조회 실패 → 안전하게 출고번호 미표시:', trackingNo, lh, e);
+                return '';
+            }
         }
         function DB_Sync_Test(str) { return str && str !== "undefined" && str !== "null" && str.length > 2; }
 
@@ -714,7 +768,7 @@
                                 alert(`[로케이션 변경 실패] ${record.tracking_no || tracking_no}\n선택한 로케이션(${desiredLoc})으로 변경하지 못해, 기존 배정 로케이션(${record.location})으로 라벨이 출력됩니다.`);
                             }
                         }
-                        let lhNo = getMatchedLHNumber(tracking_no);
+                        let lhNo = await getMatchedLHNumberChecked(tracking_no);
                         if (hasShouhinda(tracking_no, record)) lhNo = "商品代";
                         labelsDataStack.push({
                             location: targetLoc, userNo: $('#modal_search_user').val() || '1219',
@@ -855,8 +909,8 @@
             const waitDb = shippingSyncPromise
                 ? Promise.race([shippingSyncPromise.catch(() => {}), new Promise(r => setTimeout(r, 3000))])
                 : Promise.resolve();
-            waitDb.then(() => {
-                let lhNo = getMatchedLHNumber(info.trackingNo);
+            waitDb.then(async () => {
+                let lhNo = await getMatchedLHNumberChecked(info.trackingNo);
                 if (hasShouhinda(info.trackingNo, null)) lhNo = "商品代";
                 const html = generateCustomLabelHTML([{
                     location: info.location, userNo: info.userNo || '-',
