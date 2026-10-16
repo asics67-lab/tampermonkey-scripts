@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [피킹] 태블릿 피킹 (タブレットピッキング)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.7.0
+// @version      1.9.0
 // @description  피킹리스트를 인쇄하지 않고 태블릿에서 바로 보면서 피킹. 출고건 선택 → 로케이션 순서로 합친 피킹 화면 → 탭/JAN 스캔으로 체크 → 완료 후 출고건별 仕分けリスト 인쇄.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
@@ -90,6 +90,18 @@
  *  - 배송대행 출고건은 상품 정보를 보여주지 않고 Tracking 줄(Tracking 번호 + 로케이션)만 표시, 1개씩 체크
  *    (Tracking 바코드를 스캔하거나 [체크] 버튼). 개수 표시는 "n / n Tracking", 덜 가져간 것은 "미확인"
  *  - Tracking이 비어 있는 상품만 예외로 상품 줄로 표시
+ *
+ *  v1.8.0 (2026-10-16) — 세트 개수 표시 (회사 시스템 데이터 확인 후)
+ *  - 요청: "세트 수량 자세한 내용이 안 나온다. 몇 PCS인지 나와야 반카톤/한카톤 확인 가능"
+ *  - 원인: 옵션을 option1부터 읽었는데 option1은 대부분 JAN이라, 세트 정보가 있는 option2가 안 나왔음
+ *  - 포장 화면처럼 옵션1 / 옵션2를 표시 (옵션1이 JAN과 같으면 생략)
+ *  - 수량칸: "1봉지 × 40개입 = 총 40개", "5P SET × 2세트" (상품명의 nP SET), "6pcs" 등
+ *  - SET 상품인데 개수 정보가 없으면 "⚠ 세트 개수 미기재" (담당자 기재 누락)
+ *  - 로케이션별 수량은 회사 시스템의 location_breakdown을 그대로 사용
+ *  - 상품명 앞에 브랜드 표시 (포장 화면과 같게)
+ *
+ *  v1.9.0 (2026-10-16)
+ *  - 배송대행 출고건 머리 오른쪽 위에 "📦 Tracking n개"를 크게 표시 (아래에 체크 진행 p / n)
  * ============================================================
  */
 
@@ -177,8 +189,35 @@
         }
         return '';
     }
+    /* [v1.8.0] 세트 정보: 회사 시스템 포장 화면과 같은 칸(옵션1 / 옵션2)을 읽음
+     *  - 옵션2에 세트 정보: "1봉지40개입", "1BOX 4PCS", "6pcs", "48PCS" …
+     *  - 옵션1은 대부분 JAN과 같은 값이라, JAN과 같으면 표시하지 않음 (예전엔 이 JAN을 옵션으로 읽어서 세트 정보가 안 나왔음)
+     *  - 상품명에 "5P SET"처럼 적힌 세트는 수량(quantity)=낱개 수, display_quantity=세트 수 */
+    function packOptionText(it, jan) {
+        const o1 = optionToText(it.option1), o2 = optionToText(it.option2);
+        const same = (x) => normJan(x) === normJan(jan) || normJan(x) === normJan(String(jan).replace(/-H$/i, ''));
+        const parts = [o1 && !same(o1) ? o1 : '', o2 && !same(o2) ? o2 : ''].filter(x => x && x !== '-' && x.toLowerCase() !== 'null');
+        return parts.join(' / ');
+    }
+    function setInfoOf(it, jan, option, qty) {
+        const info = { pcs: 0, unit: '', pset: 0, sets: 0 };
+        const m = String(option || '').match(/(\d+)\s*(봉지|봉|BOX|박스|카톤|ケース|箱|袋|세트|セット)\s*(\d+)\s*(개입|PCS|PC|入|個|개)/i);
+        if (m) { info.pcs = parseInt(m[3], 10); info.unit = m[2]; }
+        else {
+            const m2 = String(option || '').match(/(\d+)\s*(PCS|PC|개입|個入|入|個|개)(?![a-z])/i);
+            if (m2) info.pcs = parseInt(m2[1], 10);
+        }
+        const t = String(it.display_title || it.title || '');
+        const m3 = t.match(/(\d+)\s*P\s*SET/i);
+        if (m3) {
+            info.pset = parseInt(m3[1], 10);
+            const dq = parseInt(it.display_quantity, 10);
+            info.sets = (dq > 0 && dq * info.pset === qty) ? dq : (qty % info.pset === 0 ? qty / info.pset : 0);
+        }
+        return info;
+    }
     function extractOption(it) {
-        const keys = ['option', 'option_name', 'options', 'item_option', 'option_str', 'option_text', 'option_value', 'opt', 'option1', 'variation', 'spec'];
+        const keys = ['option', 'option_name', 'options', 'item_option', 'option_str', 'option_text', 'option_value', 'opt', 'variation', 'spec'];
         for (const k of keys) {
             const t = optionToText(it[k]);
             if (t && t !== '-' && t.toLowerCase() !== 'null') return t;
@@ -211,6 +250,12 @@
 
     // 상품 1개의 로케이션을 [{name, qty}] 로 (picking-list-tools 의 extractLocationWithQty 와 같은 규칙)
     function extractLocEntries(it, totalQty) {
+        // [v1.8.0] 회사 시스템의 로케이션별 수량 (location_breakdown). 수량이 비어 있으면(배송대행) 이름만 사용
+        if (Array.isArray(it.location_breakdown) && it.location_breakdown.length) {
+            const lb = it.location_breakdown.map(r => ({ name: String(r.location || '미지정').trim() || '미지정', qty: r.quantity == null ? null : parseInt(r.quantity, 10) }));
+            if (lb.every(r => r.qty != null && !isNaN(r.qty))) return lb;
+            if (lb.length === 1) return [{ name: lb[0].name, qty: totalQty }];
+        }
         const subList = it.locations || it.location_details || it.stock_locations || it.locations_info;
         if (Array.isArray(subList) && subList.length > 0) {
             return subList.map(s => ({ name: String(s.location || s.location_name || s.name || '미지정').trim(), qty: parseInt(s.qty || s.quantity || s.count || 1) }));
@@ -261,15 +306,19 @@
 
         const out = items.map(it => {
             const jan = String(it.jancode || it.jan_code || it.item_id || '-').trim();
-            let option = extractOption(it);
+            let option = ('option1' in it || 'option2' in it) ? packOptionText(it, jan) : extractOption(it);
             const isHalf = /-H$/i.test(jan);
             if (isHalf && !extractPcs(option)) { const alt = findPcsByJan(json, jan); if (alt) option = alt; }
             const qty = parseInt(it.quantity || it.display_quantity || it.qty || '1') || 1;
+            const si = setInfoOf(it, jan, option, qty);
+            const title = String(it.title || it.item_name || it.product_name || '').trim();
+            const brand = String(it.brand || '').trim();
             return {
                 jan: jan,
-                name: String(it.title || it.item_name || it.product_name || '').trim(),
+                name: (brand && title.toUpperCase().indexOf(brand.toUpperCase()) < 0 ? brand + ' ' : '') + title,
+                isSetName: /SET|セット|세트/i.test(title),
                 option: option,
-                pcs: extractPcs(option),
+                pcs: si.pcs, unit: si.unit, pset: si.pset, sets: si.sets,
                 isHalf: isHalf,
                 img: it.image_url_thumb || it.image_url || '',
                 qty: qty,
@@ -346,7 +395,7 @@
             o.items.forEach(it => {
                 const key = [it.tracking, it.jan, it.name, it.option].join('\u0001');
                 if (!map.has(key)) map.set(key, Object.assign({}, it, { locs: it.locs.map(l => ({ name: l.name || '미지정', qty: l.qty || 0 })) }));
-                else { const x = map.get(key); x.qty += it.qty; mergeLocInto(x.locs, it.locs); }
+                else { const x = map.get(key); x.qty += it.qty; x.sets = (x.sets || 0) + (it.sets || 0); mergeLocInto(x.locs, it.locs); }
             });
             let items = Array.from(map.values());
             if (!String(o.type || '').includes('delivery')) {
@@ -354,7 +403,7 @@
                 items.forEach(it => {
                     if (!isKujiName(it.name)) { out.push(it); return; }
                     const k = [it.jan, it.name, it.option].join('\u0001');
-                    if (km.has(k)) { const x = km.get(k); x.qty += it.qty; mergeLocInto(x.locs, it.locs); }
+                    if (km.has(k)) { const x = km.get(k); x.qty += it.qty; x.sets = (x.sets || 0) + (it.sets || 0); mergeLocInto(x.locs, it.locs); }
                     else { km.set(k, it); out.push(it); }
                 });
                 items = out;
@@ -388,6 +437,7 @@
                     loc: firstLoc(it), locs: it.locs,
                     jan: it.jan, janN: normJan(it.jan), janBase: base,
                     name: it.name, option: it.option, pcs: it.pcs, isHalf: it.isHalf, img: it.img,
+                    unit: it.unit || '', pset: it.pset || 0, sets: it.sets || 0, isSetName: !!it.isSetName,
                     tracking: it.tracking, total: it.qty,
                     alloc: [{ oi: oi, qty: it.qty, tracking: it.tracking }],
                     isKuji: kuji, isMain: main, isSub: sub, setDiv: sm ? parseInt(sm[1], 10) : 0
@@ -767,6 +817,9 @@
     #tmtp .obox .on{font-size:30px;font-weight:900;letter-spacing:1px}
     #tmtp .obox .rv{font-size:16px;font-weight:700;color:#334155}
     #tmtp .obox .op{margin-left:auto;font-size:20px;font-weight:900}
+    #tmtp .obox .op.trkc{border:3px solid #0f172a;border-radius:10px;padding:4px 14px;font-size:24px;text-align:right;line-height:1.1}
+    #tmtp .obox .op.trkc b{font-size:36px;color:#d00}
+    #tmtp .obox .op.trkc small{display:block;font-size:14px;color:#475569}
     #tmtp .tag{display:inline-block;font-size:15px;font-weight:900;border-radius:6px;padding:2px 8px;margin:4px 6px 0 0;border:2px solid #0f172a}
     #tmtp .tag.red{background:#c62828;border-color:#c62828;color:#fff}
     #tmtp .tag.blue{border-color:#0284c7;color:#0369a1}
@@ -972,7 +1025,7 @@
         const tags = (o.requests || []).map(x => `<span class="tag${/무검품/.test(x) ? ' red' : ''}">${esc(x)}</span>`).join('') +
             (o.isOcean ? '<span class="tag blue">해운(OCEAN)</span>' : '');
         let html = `<div class="obox${o.isOcean ? ' ocean' : ''}">
-            <div class="r1"><span class="on">${esc(o.outNum)}</span><span class="rv">${esc(o.receiver)}</span><span class="op">${os.done ? '✅ ' : ''}${os.p} / ${os.t} ${unitOf(o)}</span></div>
+            <div class="r1"><span class="on">${esc(o.outNum)}</span><span class="rv">${esc(o.receiver)}</span>${isDelivery(o) ? `<span class="op trkc">📦 Tracking <b>${os.t}</b>개<small>${os.done ? '✅ ' : ''}체크 ${os.p} / ${os.t}</small></span>` : `<span class="op">${os.done ? '✅ ' : ''}${os.p} / ${os.t} ${unitOf(o)}</span>`}</div>
             ${tags ? `<div>${tags}</div>` : ''}
             ${o.requirementMsg ? `<div class="memo">${esc(o.requirementMsg)}</div>` : ''}
             ${kujiBannerHtml(kmap)}
@@ -1014,8 +1067,13 @@
                 const k = m ? kmap[m[1]] : null;
                 if (k && (k.status === 'ok' || k.status === 'odd') && String(k.conf.grade) === m[2]) { qtyExtra = `<div class="st">(${fmtSets(k.sets)} set)</div>`; rowCls = ' main'; }
             }
-            if (l.pcs > 0 && (l.isHalf || !l.isKuji)) { qtyExtra += `<div class="pc">×${l.pcs}pcs${l.total > 1 ? `<br>= ${l.total * l.pcs}개` : ''}</div>`; rowCls = ' half'; }
-            else if (l.isHalf) qtyExtra += '<div class="warn">하프 · 개수 확인</div>';
+            // [v1.8.0] 세트 개수 (포장 화면 옵션 / 상품명 "nP SET")
+            if (l.pset > 0 && !l.isKuji) {
+                qtyExtra += `<div class="pc">${l.pset}P SET${l.sets ? `<br>× ${l.sets}세트` : ''}</div>`; rowCls = ' half';
+            } else if (l.pcs > 0 && (l.isHalf || !l.isKuji)) {
+                const u = l.unit || '세트';
+                qtyExtra += `<div class="pc">${l.total}${esc(u)} × ${l.pcs}개입<br>= 총 ${l.total * l.pcs}개</div>`; rowCls = ' half';
+            } else if (l.isHalf || (l.isSetName && !l.isKuji)) qtyExtra += '<div class="warn">⚠ 세트 개수 미기재</div>';
             if (l.isSub) rowCls += ' ksub';
             const locHtml = l.locs.map(x => `${esc(x.name)} : ${x.qty}개`).join('<br>') +
                 (l.tracking ? `<div class="tk">…${esc(String(l.tracking).slice(-6))}</div>` : '');
