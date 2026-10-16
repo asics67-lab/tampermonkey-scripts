@@ -10,8 +10,8 @@
 // @match        https://www.platform.co.jp/admin/*
 // @match        https://platform.co.jp/admin/*
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/피킹/tablet-picking.user.js
-// @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/피킹/tablet-picking.user.js
+// @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/태블릿/tablet-picking.user.js
+// @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/태블릿/tablet-picking.user.js
 // ==/UserScript==
 
 /*
@@ -55,6 +55,7 @@
  *  - 버튼이 사라져도 계속 다시 넣음(재시도 제한 없음)
  *  - 관리자 페이지 어디서든 동작: 포장 화면이 아니면 [📱 ピッキング画面へ] 버튼으로 바로 이동
  *  - 다른 스크립트 없이 이 파일 하나만으로 동작 (원래도 다른 스크립트에 의존하지 않음)
+ *  - GitHub 위치를 태블릿/ 폴더로 변경 (태블릿에만 설치하는 스크립트라 피킹리스트 등과 섞이지 않게)
  * ============================================================
  */
 
