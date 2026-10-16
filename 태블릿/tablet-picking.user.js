@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [피킹] 태블릿 피킹 (タブレットピッキング)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.1
+// @version      1.7.0
 // @description  피킹리스트를 인쇄하지 않고 태블릿에서 바로 보면서 피킹. 출고건 선택 → 로케이션 순서로 합친 피킹 화면 → 탭/JAN 스캔으로 체크 → 완료 후 출고건별 仕分けリスト 인쇄.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
@@ -51,18 +51,52 @@
  *  - 원인: 버튼을 사이트 PICKING LIST 버튼 옆에만 넣었는데, 태블릿 화면 배치에서는 그 자리가
  *    안 보이거나 늦게 그려져서(20초만 재시도) 버튼이 안 나올 수 있었음.
  *  - 수정: 화면 아래에 항상 떠 있는 피킹 바 추가 (위치 상관없이 보임)
- *      [📱 ピッキング開始 (선택 n件)] [🆓 未ピッキングのみ] + "タブレットピッキング ON" 표시
+ *      [📱 피킹 시작 (선택 n件)] [🆓 未ピッキングのみ] + "タブレットピッキング ON" 표시
  *  - 버튼이 사라져도 계속 다시 넣음(재시도 제한 없음)
- *  - 관리자 페이지 어디서든 동작: 포장 화면이 아니면 [📱 ピッキング画面へ] 버튼으로 바로 이동
+ *  - 관리자 페이지 어디서든 동작: 포장 화면이 아니면 [📱 피킹 화면으로] 버튼으로 바로 이동
  *  - 다른 스크립트 없이 이 파일 하나만으로 동작 (원래도 다른 스크립트에 의존하지 않음)
  *  - v1.3.1: GitHub 위치를 태블릿/ 폴더로 변경 (태블릿에만 설치하는 스크립트라 피킹리스트 등과 섞이지 않게)
+ *
+ *  v1.4.0 (2026-10-16) — 테스트 기간용 한국어 화면
+ *  - 요청: "테스트가 끝날 때까지 화면 메시지·인쇄물을 전부 한국어로" (완성 후 전체 일본어로 다시 변경 예정)
+ *  - 피킹 바·버튼·안내창·토스트·카메라 안내·仕分けリスト(→ 분류 리스트) 인쇄물 문구를 모두 한국어로 변경
+ *    (欠品 → 결품, 点 → 개, 件 → 건 등). 인쇄 글꼴은 맑은 고딕을 우선 사용
+ *  - @name 은 그대로 둠 (이름을 바꾸면 Tampermonkey가 다른 스크립트로 보고 새로 설치함)
+ *
+ *  v1.5.0 (2026-10-16) — 피킹 화면을 포장 화면처럼 출고건별로
+ *  - 요청: "PICKING 화면이 포장화면처럼 나와야 실수가 없다. 특히 세트수량은 예민한 부분"
+ *  - 여러 출고건을 로케이션으로 합쳐 보여주던 방식 → 출고건 하나씩 (위쪽 출고건 탭 / ◀ ▶ 로 이동)
+ *    출고건 머리: 출고번호·수취인·요청사항(무검품 출하·완충재 추가 등)·추가요청 메모·OCEAN
+ *    상품 줄: No · 이미지 · 상품명 · 잔코드(+옵션) · 수량 · 로케이션(로케이션별 개수)·Tracking · 집은 수
+ *  - 합산·정렬·번호는 관리팀 피킹리스트와 같은 기준 (Tracking+잔코드+상품명+옵션 합산, Tracking→로케이션→쿠지 메인 순)
+ *  - 아타리쿠지 세트수 (피킹리스트와 같은 기준)
+ *      메인 잔코드(S숫자): 노란 줄 + 수량칸 "(n set)", 서브 등급은 1-1, 1-2 번호와 └ 표시
+ *      메인 잔코드가 없으면 세트 기준표(KUJI_SETS / 태블릿 임시 등록)로 "n세트" 배너 + 기준등급 줄에 (n set)
+ *  - 옵션 PCS(-H 등): 파란 줄 + "×20pcs = 실제 개수", PCS를 못 찾으면 "하프 · 개수 확인"
+ *  - 스캔: 지금 출고건 안에서만 찾음. 실물 바코드(13자리 JAN)로 찍어도 잔코드(JAN-1, JAN-A …)와 맞춤.
+ *    같은 JAN에 등급이 여러 개면 화면에서 골라서 +1. 다른 출고건 상품이면 알려 주고 이동 버튼 표시
+ *  - 한 출고건을 다 집으면 자동으로 다음 출고건으로 이동
+ *  - 결품 계산이 출고건별로 정확해짐 (예전엔 합친 줄을 앞 출고건부터 채워서 결품이 뒤 출고건으로 몰렸음)
+ *  - 용지에 100mm 롤지 추가 (프린터 구매 후 실제 폭에 맞춰 조정 예정)
+ *  - 진행 저장 키를 v2로 변경 (예전 버전에서 하던 진행 데이터는 이어지지 않음)
+ *
+ *  v1.6.0 (2026-10-16)
+ *  - 아타리쿠지 세트 기준을 구글시트(아타리쿠지_세트기준)에서 읽음 — 관리팀 피킹리스트와 같은 시트라 한 곳만 고치면 됨
+ *    (5분마다 다시 읽음, 미등록 배너에 [📋 시트에 등록] [🔄 다시 읽기] 버튼. 시트를 못 읽으면 경고 표시 후 스크립트 기준·임시 등록만 사용)
+ *  - 분류 리스트 인쇄에서 상품 정보(결품 상품 목록) 제거 → 출고번호·QR·수취인·개수·결품 개수·요청사항만 인쇄
+ *
+ *  v1.7.0 (2026-10-16) — 배송대행은 Tracking 단위
+ *  - 요청: "배송대행은 상품 갯수를 체크할 필요 없이 Tracking 번호만 1개 체크해서 가져가면 된다"
+ *  - 배송대행 출고건은 상품 정보를 보여주지 않고 Tracking 줄(Tracking 번호 + 로케이션)만 표시, 1개씩 체크
+ *    (Tracking 바코드를 스캔하거나 [체크] 버튼). 개수 표시는 "n / n Tracking", 덜 가져간 것은 "미확인"
+ *  - Tracking이 비어 있는 상품만 예외로 상품 줄로 표시
  * ============================================================
  */
 
 (function () {
     'use strict';
 
-    const STORE_KEY = 'tmTabletPicking.batch.v1';
+    const STORE_KEY = 'tmTabletPicking.batch.v2'; // [v1.5.0] 출고건별 구조로 바뀌어 v2 (옛 진행 데이터와 섞이지 않게)
     const ZXING_URL = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
     const QR_URL = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
 
@@ -72,7 +106,7 @@
     const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const normJan = (s) => String(s || '').replace(/[^0-9A-Za-z]/g, '').toUpperCase();
     const locCompare = (a, b) => {
-        const ua = a === '未指定', ub = b === '未指定';
+        const ua = a === '미지정', ub = b === '미지정';
         if (ua !== ub) return ua ? 1 : -1;
         return a.localeCompare(b, 'ja', { numeric: true, sensitivity: 'base' });
     };
@@ -90,7 +124,7 @@
     function loadScript(url) {
         return new Promise((resolve, reject) => {
             const s = document.createElement('script');
-            s.src = url; s.onload = resolve; s.onerror = () => reject(new Error('読み込み失敗: ' + url));
+            s.src = url; s.onload = resolve; s.onerror = () => reject(new Error('불러오기 실패: ' + url));
             document.head.appendChild(s);
         });
     }
@@ -179,7 +213,7 @@
     function extractLocEntries(it, totalQty) {
         const subList = it.locations || it.location_details || it.stock_locations || it.locations_info;
         if (Array.isArray(subList) && subList.length > 0) {
-            return subList.map(s => ({ name: String(s.location || s.location_name || s.name || '未指定').trim(), qty: parseInt(s.qty || s.quantity || s.count || 1) }));
+            return subList.map(s => ({ name: String(s.location || s.location_name || s.name || '미지정').trim(), qty: parseInt(s.qty || s.quantity || s.count || 1) }));
         }
         const rawLoc = String(it.location_str || it.location || it.location_name || '').trim();
         if (/:\s*\d+\s*(개|個)/.test(rawLoc)) {
@@ -199,7 +233,7 @@
             });
         }
         if (parts.length === 1) return [{ name: parts[0], qty: totalQty }];
-        return [{ name: '未指定', qty: totalQty }];
+        return [{ name: '미지정', qty: totalQty }];
     }
 
     async function fetchOrder(task, csrf) {
@@ -246,8 +280,8 @@
 
         const reqSet = new Set();
         const p = json.packing || {};
-        if (parseInt(p.no_inspection) === 1) reqSet.add('検品なし出荷');
-        if (parseInt(p.add_material) === 1) reqSet.add('緩衝材追加');
+        if (parseInt(p.no_inspection) === 1) reqSet.add('무검품 출하');
+        if (parseInt(p.add_material) === 1) reqSet.add('완충재 추가');
         ['put_sticker_str', 'remove_price_str', 'take_picture_str', 'seperate_str'].forEach(k => {
             const v = json[k];
             if (v && typeof v === 'string') v.split(/No\d+\s*[:：]\s*/i).forEach(x => {
@@ -259,42 +293,211 @@
         return { items: out, requests: Array.from(reqSet), requirementMsg: reqMsg };
     }
 
-    /* ---------- 피킹 줄 만들기: 로케이션 + 상품(잔코드·상품명·옵션) 기준으로 합침 ---------- */
+    /* ---------- [v1.5.0] 피킹 줄 만들기: 출고건별로 (포장 화면·피킹리스트와 같은 합산·정렬) ----------
+     *  - 같은 출고건 안에서 Tracking + 잔코드 + 상품명 + 옵션이 같으면 한 줄로 합침
+     *  - SHOP구매(배송대행 아님)의 쿠지는 Tracking이 달라도 잔코드+상품명+옵션이 같으면 합침
+     *  - 정렬: Tracking → 로케이션 → 쿠지 메인(S숫자) 먼저
+     *  - 번호: 메인 잔코드가 있는 쿠지 서브 등급은 1-1, 1-2 …  */
+    const isKujiName = (n) => /KUJI/i.test(String(n || ''));
+    // 잔코드 앞의 순수 JAN(8~14자리). "4550624971331-1", "4550624971331-A", "4550624971331S10", "4901234567890-H" → 4550624971331 / 4901234567890
+    function janBaseOf(jan) {
+        const m = String(jan || '').match(/^\s*(\d{8,14})/);
+        return m ? m[1] : normJan(String(jan || '').replace(/-H$/i, ''));
+    }
+    function mergeLocInto(dst, src) {
+        src.forEach(l => {
+            const f = dst.find(x => x.name === l.name);
+            if (f) f.qty += (l.qty || 0); else dst.push({ name: l.name, qty: l.qty || 0 });
+        });
+    }
     function buildLines(orders) {
-        const map = new Map();
+        const lines = [];
         orders.forEach((o, oi) => {
+            // [v1.7.0] 배송대행: 상품 개수는 확인하지 않고 Tracking(상자) 단위로 1개씩만 체크
+            let trkCount = 0;
+            if (String(o.type || '').includes('delivery')) {
+                const tm = new Map(), rest = [];
+                o.items.forEach(it => {
+                    const t = String(it.tracking || '').trim();
+                    if (!t) { rest.push(it); return; }   // Tracking이 없는 상품은 예외로 상품 줄로 보여 줌
+                    if (!tm.has(t)) tm.set(t, { tracking: t, locs: [] });
+                    const x = tm.get(t);
+                    it.locs.forEach(l => { const nm = l.name || '미지정'; if (!x.locs.some(y => y.name === nm)) x.locs.push({ name: nm, qty: 0 }); });
+                });
+                const trks = Array.from(tm.values());
+                trks.forEach(t => { if (!t.locs.length) t.locs.push({ name: '미지정', qty: 0 }); });
+                trks.sort((a, b) => locCompare(a.locs[0].name, b.locs[0].name) || a.tracking.localeCompare(b.tracking));
+                trks.forEach((t, i) => {
+                    lines.push({
+                        key: 'O' + oi + 'T' + i, oi: oi, no: String(i + 1), isTrk: true,
+                        loc: t.locs[0].name, locs: t.locs,
+                        jan: t.tracking, janN: normJan(t.tracking), janBase: normJan(t.tracking),
+                        name: '', option: '', pcs: 0, isHalf: false, img: '',
+                        tracking: t.tracking, total: 1,
+                        alloc: [{ oi: oi, qty: 1, tracking: t.tracking }],
+                        isKuji: false, isMain: false, isSub: false, setDiv: 0
+                    });
+                });
+                trkCount = trks.length;
+                if (!rest.length) return;
+                o = Object.assign({}, o, { items: rest });
+            }
+            const map = new Map();
             o.items.forEach(it => {
-                // 로케이션 개수 합이 상품 수량과 다르면(데이터 이상) 마지막 로케이션에서 맞춤
-                let locs = it.locs.map(l => ({ name: l.name || '未指定', qty: l.qty || 0 }));
+                const key = [it.tracking, it.jan, it.name, it.option].join('\u0001');
+                if (!map.has(key)) map.set(key, Object.assign({}, it, { locs: it.locs.map(l => ({ name: l.name || '미지정', qty: l.qty || 0 })) }));
+                else { const x = map.get(key); x.qty += it.qty; mergeLocInto(x.locs, it.locs); }
+            });
+            let items = Array.from(map.values());
+            if (!String(o.type || '').includes('delivery')) {
+                const km = new Map(), out = [];
+                items.forEach(it => {
+                    if (!isKujiName(it.name)) { out.push(it); return; }
+                    const k = [it.jan, it.name, it.option].join('\u0001');
+                    if (km.has(k)) { const x = km.get(k); x.qty += it.qty; mergeLocInto(x.locs, it.locs); }
+                    else { km.set(k, it); out.push(it); }
+                });
+                items = out;
+            }
+            // 로케이션 개수 합이 상품 수량과 다르면(데이터 이상) 마지막 로케이션에서 맞춤
+            items.forEach(it => {
+                let locs = it.locs.filter(l => l.qty > 0);
+                if (!locs.length) locs = [{ name: (it.locs[0] && it.locs[0].name) || '미지정', qty: 0 }];
                 const sum = locs.reduce((a, l) => a + l.qty, 0);
-                if (sum !== it.qty && locs.length) locs[locs.length - 1].qty += (it.qty - sum);
-                locs = locs.filter(l => l.qty > 0);
-                locs.forEach(l => {
-                    const key = [l.name, it.jan, it.name, it.option].join('\u0001');
-                    if (!map.has(key)) {
-                        map.set(key, {
-                            key: key, loc: l.name, jan: it.jan, janN: normJan(it.jan), janBase: normJan(String(it.jan).replace(/-H$/i, '')),
-                            name: it.name, option: it.option, pcs: it.pcs, isHalf: it.isHalf, img: it.img, total: 0, alloc: []
-                        });
-                    }
-                    const line = map.get(key);
-                    line.total += l.qty;
-                    const a = line.alloc.find(x => x.oi === oi && x.tracking === it.tracking);
-                    if (a) a.qty += l.qty; else line.alloc.push({ oi: oi, qty: l.qty, tracking: it.tracking });
+                if (sum !== it.qty) locs[locs.length - 1].qty += (it.qty - sum);
+                it.locs = locs.filter(l => l.qty > 0);
+                if (!it.locs.length) it.locs = [{ name: '미지정', qty: it.qty }];
+            });
+            const isMain = (it) => isKujiName(it.name) && /S\d+/i.test(it.jan);
+            const firstLoc = (it) => it.locs[0].name;
+            items.sort((a, b) =>
+                String(a.tracking || '').localeCompare(String(b.tracking || '')) ||
+                locCompare(firstLoc(a), firstLoc(b)) ||
+                (isMain(b) - isMain(a)));
+            const mains = new Set(items.filter(isMain).map(it => janBaseOf(it.jan)));
+            let mainNo = trkCount, subNo = 0;
+            items.forEach((it, i) => {
+                const kuji = isKujiName(it.name), main = kuji && /S\d+/i.test(it.jan);
+                const base = janBaseOf(it.jan);
+                const sub = kuji && !main && mains.has(base);
+                let no;
+                if (sub) { subNo++; no = mainNo + '-' + subNo; } else { mainNo++; subNo = 0; no = String(mainNo); }
+                const sm = main ? String(it.jan).match(/S(\d+)/i) : null;
+                lines.push({
+                    key: 'O' + oi + 'L' + i, oi: oi, no: no,
+                    loc: firstLoc(it), locs: it.locs,
+                    jan: it.jan, janN: normJan(it.jan), janBase: base,
+                    name: it.name, option: it.option, pcs: it.pcs, isHalf: it.isHalf, img: it.img,
+                    tracking: it.tracking, total: it.qty,
+                    alloc: [{ oi: oi, qty: it.qty, tracking: it.tracking }],
+                    isKuji: kuji, isMain: main, isSub: sub, setDiv: sm ? parseInt(sm[1], 10) : 0
                 });
             });
         });
-        const lines = Array.from(map.values());
-        lines.sort((a, b) => locCompare(a.loc, b.loc) || a.jan.localeCompare(b.jan) || a.name.localeCompare(b.name));
-        // 줄 번호를 키로 사용 (진행 상황 저장용)
-        lines.forEach((l, i) => { l.key = 'L' + i; });
         return lines;
+    }
+
+    /* ---------- [v1.5.0] 아타리쿠지 세트 기준 (관리/05-피킹리스트 picking-list-tools 와 같은 기준) ----------
+     *  메인 잔코드(S숫자)가 있으면: 메인 수량 ÷ S숫자 = 세트수 (내림)
+     *  메인 잔코드가 없으면(통관불가 등): 아래 기준표의 "기준등급 n개 = 1세트"로 계산
+     *  기준표에 없으면 화면에서 [이 태블릿에 임시 등록] (모든 태블릿에 쓰려면 여기 KUJI_SETS에 한 줄 추가) */
+    const KUJI_SETS = {
+        '4550624971331': { grade: '1', perSet: 2 }, // SANRIO ATARIKUJI BLANKET SET
+    };
+    const KUJI_LOCAL_KEY = 'kujiSetsLocal';
+    /* [v1.6.0] 세트 기준 구글시트 (관리팀 피킹리스트와 같은 시트) — 시트에 한 줄 추가하면 모든 태블릿·PC에 반영
+     *  시트 열: A 잔코드(메인 JAN) | B 기준등급 | C 1세트수량 | D~ 메모
+     *  우선순위: 구글시트 > 위 KUJI_SETS > 이 태블릿 임시 등록 */
+    const KUJI_SHEET_ID = '1dEuXsgKJsdsM4FFHEgnuSE3droNVPQawF5z8hQgO59Q';
+    const KUJI_SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/' + KUJI_SHEET_ID + '/gviz/tq?tqx=out:csv&sheet=' + encodeURIComponent('세트기준');
+    const KUJI_SHEET_EDIT_URL = 'https://docs.google.com/spreadsheets/d/' + KUJI_SHEET_ID + '/edit';
+    let kujiSheet = { sets: {}, error: '', at: 0, loading: null };
+    function parseCsv(text) {
+        const rows = [];
+        let row = [], cur = '', q = false;
+        for (let i = 0; i < text.length; i++) {
+            const c = text[i];
+            if (q) {
+                if (c === '"' && text[i + 1] === '"') { cur += '"'; i++; }
+                else if (c === '"') q = false;
+                else cur += c;
+            } else if (c === '"') q = true;
+            else if (c === ',') { row.push(cur); cur = ''; }
+            else if (c === '\n' || c === '\r') {
+                if (c === '\r' && text[i + 1] === '\n') i++;
+                row.push(cur); rows.push(row); row = []; cur = '';
+            } else cur += c;
+        }
+        if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+        return rows;
+    }
+    // 5분에 한 번만 다시 읽음 (force면 바로)
+    function refreshKujiSheet(force) {
+        if (kujiSheet.loading) return kujiSheet.loading;
+        if (!force && kujiSheet.at && Date.now() - kujiSheet.at < 5 * 60 * 1000) return Promise.resolve();
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 10000);
+        kujiSheet.loading = fetch(KUJI_SHEET_CSV_URL + '&_=' + Date.now(), { cache: 'no-store', signal: ctrl.signal })
+            .then(res => { if (!res.ok) throw new Error('HTTP ' + res.status); return res.text(); })
+            .then(text => {
+                if (/^\s*</.test(text)) throw new Error('시트 공유 설정 확인 필요');
+                const sets = {};
+                parseCsv(text).forEach(r => {
+                    const jan = String(r[0] || '').replace(/\s/g, '').replace(/\.0+$/, '');
+                    const grade = String(r[1] || '').replace(/[-\s]/g, '').replace(/\.0+$/, '');
+                    const per = parseInt(String(r[2] || '').replace(/[^\d]/g, ''), 10);
+                    if (/^\d{8,14}$/.test(jan) && /^[0-9A-Za-z]+$/.test(grade) && per > 0) sets[jan] = { grade: grade, perSet: per };
+                });
+                kujiSheet = { sets: sets, error: '', at: Date.now(), loading: null };
+            })
+            .catch(e => {
+                console.warn('[태블릿피킹] 세트 기준 시트 읽기 실패', e);
+                kujiSheet = { sets: kujiSheet.sets, error: (e && e.name === 'AbortError') ? '응답 없음' : String(e.message || e), at: Date.now(), loading: null };
+            })
+            .finally(() => { clearTimeout(timer); if (PK) render(); });
+        return kujiSheet.loading;
+    }
+    function kujiSets() {
+        let local = {};
+        try { local = JSON.parse(localStorage.getItem(KUJI_LOCAL_KEY) || '{}') || {}; } catch (e) {}
+        return Object.assign({}, local, KUJI_SETS, kujiSheet.sets);
+    }
+    const fmtSets = (n) => Number.isInteger(n) ? String(n) : n.toFixed(1);
+    // 출고건 하나: 메인 잔코드가 없는 쿠지 묶음별 세트 계산
+    function kujiInfoFor(b, oi) {
+        const sets = kujiSets();
+        const ls = b.lines.filter(l => l.oi === oi && l.isKuji);
+        const mains = new Set(ls.filter(l => l.isMain).map(l => l.janBase));
+        const subs = {};
+        ls.forEach(l => {
+            if (l.isMain) return;
+            const m = String(l.jan).trim().match(/^(\d{8,14})\s*-\s*([0-9A-Za-z]+)$/);
+            if (!m) return;
+            const s = subs[m[1]] = subs[m[1]] || { name: l.name, grades: {} };
+            s.grades[m[2]] = (s.grades[m[2]] || 0) + l.total;
+        });
+        const res = {};
+        Object.keys(subs).forEach(base => {
+            if (mains.has(base)) return;
+            const s = subs[base], conf = sets[base];
+            const info = { base: base, name: s.name, grades: Object.keys(s.grades), conf: conf };
+            if (!conf) info.status = 'unregistered';
+            else if (!s.grades[String(conf.grade)]) info.status = 'noref';
+            else {
+                info.refQty = s.grades[String(conf.grade)];
+                info.sets = info.refQty / conf.perSet;
+                info.status = Number.isInteger(info.sets) ? 'ok' : 'odd';
+            }
+            res[base] = info;
+        });
+        return res;
     }
 
     /* ==========================================================
      * 출고관리 화면: 버튼 추가 + 출고건 수집
      * ========================================================== */
     function injectButton() {
+        if (document.querySelector('meta[name="tm-tablet-print"]')) return; // 인쇄용 새 창 제외
         if (document.getElementById('tm-tablet-pick-btn')) return;
         const origin = document.getElementById('btnDownloadPickingList');
         const area = origin || document.querySelector('.card-header .btn-group') || document.querySelector('.card-body .mb-3');
@@ -303,7 +506,7 @@
         btn.id = 'tm-tablet-pick-btn';
         btn.type = 'button';
         btn.className = 'btn btn-sm';
-        btn.textContent = '📱 タブレットピッキング';
+        btn.textContent = '📱 태블릿 피킹';
         btn.style.cssText = 'background:#0f766e !important;color:#fff !important;margin:0 8px;border:none;padding:6px 16px;font-weight:bold;border-radius:4px;';
         btn.onclick = onStartClick;
         if (origin) origin.parentNode.insertBefore(btn, origin.nextSibling); else area.appendChild(btn);
@@ -317,7 +520,7 @@
             f.type = 'button';
             f.className = 'btn btn-sm';
             const on = sel.value === '2';
-            f.textContent = on ? '👀 全部表示' : '🆓 未ピッキングのみ';
+            f.textContent = on ? '👀 전체 보기' : '🆓 미피킹만';
             f.style.cssText = 'background:#fff !important;color:#0f766e !important;border:2px solid #0f766e;padding:4px 12px;font-weight:bold;border-radius:4px;';
             f.onclick = () => { sel.value = on ? '' : '2'; form.submit(); };
             btn.parentNode.insertBefore(f, btn.nextSibling);
@@ -325,6 +528,7 @@
     }
 
     function injectResumeButton() {
+        if (document.querySelector('meta[name="tm-tablet-print"]')) return; // 인쇄용 새 창 제외
         const b = loadBatch();
         let el = document.getElementById('tm-tablet-pick-resume');
         if (!b) { if (el) el.remove(); return; }
@@ -337,7 +541,7 @@
             document.body.appendChild(el);
         }
         const st = batchStats(b);
-        el.textContent = `📱 ピッキング再開 (${st.picked}/${st.total})`;
+        el.textContent = `📱 피킹 이어하기 (${st.picked}/${st.total})`;
     }
 
     function readSelectedTasks(boxes) {
@@ -357,19 +561,19 @@
 
     function onStartClick() {
         const boxes = Array.from(document.querySelectorAll('input.sub_checkbox:checked'));
-        if (boxes.length === 0) { toastMsg('出庫を選択してください', false); return; }
+        if (boxes.length === 0) { toastMsg('출고건을 선택해 주세요', false); return; }
         const cur = loadBatch();
         const go = async () => {
-            const ov = overlayMsg('ほかの人のピッキング状況を確認中...');
+            const ov = overlayMsg('다른 사람의 피킹 상황 확인 중...');
             const taken = await findTakenIds(readSelectedTasks(boxes));
             ov.close();
             if (taken.size) {
                 const takenBoxes = boxes.filter(b => taken.has(b.getAttribute('data-id') + ':' + b.getAttribute('data-type')));
                 const names = takenBoxes.map(b => esc(b.closest('tr')?.querySelector('td:nth-child(4)')?.innerText.trim() || b.getAttribute('data-id'))).join(', ');
                 const rest = boxes.filter(b => !takenBoxes.includes(b));
-                modal(`次の出庫はすでに <b style="color:#dc2626">ほかの人がピッキング中</b> です:<br><b>${names}</b>`, [
-                    ...(rest.length ? [{ label: `除外して開始 (${rest.length}件)`, color: '#0f766e', fn: () => checkIssueAndStart(rest) }] : []),
-                    { label: 'キャンセル', color: '#6b7280', fn: () => location.reload() }
+                modal(`다음 출고건은 이미 <b style="color:#dc2626">다른 사람이 피킹 중</b>입니다:<br><b>${names}</b>`, [
+                    ...(rest.length ? [{ label: `제외하고 시작 (${rest.length}건)`, color: '#0f766e', fn: () => checkIssueAndStart(rest) }] : []),
+                    { label: '취소', color: '#6b7280', fn: () => location.reload() }
                 ]);
                 return;
             }
@@ -381,19 +585,19 @@
                 return a && (a.classList.contains('text-warning') || a.classList.contains('text-danger'));
             });
             if (issue.length) {
-                modal(`注意会員の出庫が <b style="color:#dc2626">${issue.length}件</b> 含まれています。`, [
-                    { label: `除外して開始 (${boxes.length - issue.length}件)`, color: '#dc2626', fn: () => { const n = boxes.filter(b => !issue.includes(b)); if (n.length) startBatch(n); } },
-                    { label: `全部で開始 (${boxes.length}件)`, color: '#2563eb', fn: () => startBatch(boxes) },
-                    { label: 'キャンセル', color: '#6b7280' }
+                modal(`주의 회원사 출고건이 <b style="color:#dc2626">${issue.length}건</b> 포함되어 있습니다.`, [
+                    { label: `제외하고 시작 (${boxes.length - issue.length}건)`, color: '#dc2626', fn: () => { const n = boxes.filter(b => !issue.includes(b)); if (n.length) startBatch(n); } },
+                    { label: `전체로 시작 (${boxes.length}건)`, color: '#2563eb', fn: () => startBatch(boxes) },
+                    { label: '취소', color: '#6b7280' }
                 ]);
             } else startBatch(boxes);
         };
         if (cur) {
             const st = batchStats(cur);
-            modal(`途中のピッキングがあります (${st.picked}/${st.total})。<br>破棄して新しく始めますか？`, [
-                { label: '途中のを再開', color: '#0f766e', fn: () => openPicker(cur) },
-                { label: '破棄して新規', color: '#dc2626', fn: go },
-                { label: 'キャンセル', color: '#6b7280' }
+            modal(`진행 중이던 피킹이 있습니다 (${st.picked}/${st.total}).<br>버리고 새로 시작할까요?`, [
+                { label: '이어서 하기', color: '#0f766e', fn: () => openPicker(cur) },
+                { label: '버리고 새로 시작', color: '#dc2626', fn: go },
+                { label: '취소', color: '#6b7280' }
             ]);
         } else go();
     }
@@ -448,11 +652,11 @@
 
     async function startBatch(boxes) {
         const tasks = readSelectedTasks(boxes);
-        const ovMark = overlayMsg('ピッキング中に変更中...');
+        const ovMark = overlayMsg('피킹 중으로 변경 중...');
         const marked = await markSystemPicking(tasks);
         ovMark.close();
         const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
-        const ov = overlayMsg(`データ取得中... (0 / ${tasks.length})`);
+        const ov = overlayMsg(`데이터 불러오는 중... (0 / ${tasks.length})`);
         let done = 0;
         const failed = [];
         const orders = await runLimited(tasks, 6, async (t) => {
@@ -464,12 +668,12 @@
                 failed.push(t.outNum);
                 return null;
             } finally {
-                done++; ov.set(`データ取得中... (${done} / ${tasks.length})`);
+                done++; ov.set(`데이터 불러오는 중... (${done} / ${tasks.length})`);
             }
         });
         ov.close();
         const okOrders = orders.filter(o => o && o.items.length);
-        if (!okOrders.length) { modal('商品データを取得できませんでした。画面を更新して再度お試しください。', [{ label: 'OK', color: '#6b7280' }]); return; }
+        if (!okOrders.length) { modal('상품 데이터를 불러오지 못했습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.', [{ label: 'OK', color: '#6b7280' }]); return; }
         const batch = {
             id: 'B' + Date.now(),
             createdAt: new Date().toISOString(),
@@ -480,8 +684,8 @@
         };
         saveBatch(batch);
         openPicker(batch);
-        if (!marked) modal('システムの「ピッキング中」への変更に失敗しました。<br>ほかの人に同じ出庫が見えている可能性があります。管理者に確認してください。', [{ label: 'OK', color: '#6b7280' }]);
-        if (failed.length) modal(`次の出庫は読み込めず、リストに入っていません:<br><b>${failed.map(esc).join(', ')}</b>`, [{ label: 'OK', color: '#6b7280' }]);
+        if (!marked) modal('시스템을 「피킹 중」으로 바꾸지 못했습니다.<br>다른 사람에게도 같은 출고건이 보일 수 있습니다. 관리자에게 확인해 주세요.', [{ label: 'OK', color: '#6b7280' }]);
+        if (failed.length) modal(`다음 출고건은 불러오지 못해 목록에 들어가지 않았습니다:<br><b>${failed.map(esc).join(', ')}</b>`, [{ label: 'OK', color: '#6b7280' }]);
     }
 
     function batchStats(b) {
@@ -497,7 +701,7 @@
      * 피킹 화면 (태블릿 전체화면)
      * ========================================================== */
     const CSS = `
-    #tmtp{position:fixed;inset:0;z-index:99999;background:#f1f5f9;font-family:"Hiragino Sans","Meiryo","Malgun Gothic",sans-serif;color:#0f172a;display:flex;flex-direction:column;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+    #tmtp{position:fixed;inset:0;z-index:99999;background:#f1f5f9;font-family:"Malgun Gothic","Hiragino Sans","Meiryo",sans-serif;color:#0f172a;display:flex;flex-direction:column;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
     #tmtp *{box-sizing:border-box}
     #tmtp .hd{background:#0f172a;color:#fff;padding:10px 14px;display:flex;flex-wrap:wrap;align-items:center;gap:10px}
     #tmtp .hd .ttl{font-weight:800;font-size:18px;white-space:nowrap}
@@ -548,6 +752,49 @@
     #tmtp-cam .cmsg{color:#fff;font-size:18px;font-weight:700;font-family:sans-serif}
     #tmtp-cam button{border:none;border-radius:12px;padding:14px 28px;font-size:18px;font-weight:900;background:#fff}
     @media (max-width:700px){#tmtp .loc{width:84px;font-size:18px}#tmtp .cnt{width:112px}#tmtp .num{font-size:26px}#tmtp .img{width:52px;height:52px}}
+    
+    #tmtp .tabs{background:#e2e8f0;padding:8px 12px;display:flex;gap:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;align-items:center}
+    #tmtp .tabs .nv{border:none;border-radius:10px;min-width:56px;min-height:48px;font-size:22px;font-weight:900;background:#0f172a;color:#fff;flex:none}
+    #tmtp .oc{flex:none;border:2px solid #94a3b8;background:#fff;border-radius:10px;padding:6px 12px;font-size:16px;font-weight:900;min-height:48px;color:#0f172a}
+    #tmtp .oc small{display:block;font-size:12px;font-weight:700;color:#475569}
+    #tmtp .oc.cur{border-color:#0f766e;background:#0f766e;color:#fff}
+    #tmtp .oc.cur small{color:#ccfbf1}
+    #tmtp .oc.done{border-color:#16a34a;background:#dcfce7}
+    #tmtp .oc.cur.done{background:#16a34a;color:#fff}
+    #tmtp .obox{background:#fff;border:3px solid #0f172a;border-radius:14px;padding:10px 14px;margin-bottom:10px}
+    #tmtp .obox.ocean{border-color:#0284c7}
+    #tmtp .obox .r1{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+    #tmtp .obox .on{font-size:30px;font-weight:900;letter-spacing:1px}
+    #tmtp .obox .rv{font-size:16px;font-weight:700;color:#334155}
+    #tmtp .obox .op{margin-left:auto;font-size:20px;font-weight:900}
+    #tmtp .tag{display:inline-block;font-size:15px;font-weight:900;border-radius:6px;padding:2px 8px;margin:4px 6px 0 0;border:2px solid #0f172a}
+    #tmtp .tag.red{background:#c62828;border-color:#c62828;color:#fff}
+    #tmtp .tag.blue{border-color:#0284c7;color:#0369a1}
+    #tmtp .memo{margin-top:6px;font-size:16px;font-weight:800;color:#c62828;white-space:pre-wrap;border-left:4px solid #c62828;padding-left:8px}
+    #tmtp .kb{margin-top:8px;border:3px solid #d00;background:#fff4f4;border-radius:8px;padding:6px 10px;font-size:16px;font-weight:900;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+    #tmtp .kb.warn{border-color:#e69500;background:#fff8e6}
+    #tmtp .kb .big{font-size:26px;color:#d00}
+    #tmtp .kb button{border:none;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:900;background:#6b7280;color:#fff}
+    #tmtp .card .no{width:58px;flex:none;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:900;background:#f1f5f9;border-right:1px solid #e2e8f0}
+    #tmtp .card.main{background:#fff9c4;border-color:#e6b800}
+    #tmtp .card.half{background:#e3f2fd;border-color:#64b5f6}
+    #tmtp .card.ksub .nm,#tmtp .card.ksub .jan{color:#555;font-weight:500}
+    #tmtp .card.ksub .jan b{color:#555}
+    #tmtp .card .sb2{color:#ff3e1d;font-weight:900;margin-right:4px}
+    #tmtp .qty{width:104px;flex:none;display:flex;flex-direction:column;align-items:center;justify-content:center;border-left:1px solid #e2e8f0;padding:4px}
+    #tmtp .qty .q{font-size:32px;font-weight:900;color:#d00;line-height:1}
+    #tmtp .qty .st{font-size:15px;font-weight:900;color:#ff3e1d;margin-top:2px}
+    #tmtp .qty .pc{font-size:13px;font-weight:900;color:#1565c0;margin-top:2px;text-align:center}
+    #tmtp .qty .warn{font-size:12px;font-weight:900;color:#fff;background:#e69500;border-radius:4px;padding:1px 4px;margin-top:2px}
+    #tmtp .lcs{width:150px;flex:none;display:flex;flex-direction:column;align-items:center;justify-content:center;border-left:1px solid #e2e8f0;padding:4px;text-align:center;font-size:17px;font-weight:900;line-height:1.3;word-break:break-all}
+    #tmtp .lcs .tk{font-size:12px;font-weight:700;color:#3b82f6;margin-top:3px}
+    #tmtp .card.full .lcs{background:#16a34a;color:#fff}
+    #tmtp .card.full .lcs .tk{color:#dcfce7}
+    #tmtp .card.trk .tkl{font-size:13px;font-weight:800;color:#64748b}
+    #tmtp .card.trk .tkn{font-size:20px;font-family:Consolas,monospace;color:#334155;word-break:break-all}
+    #tmtp .card.trk .tkn b{font-size:34px;color:#0f172a}
+    #tmtp .card.trk .lcs{width:200px;font-size:24px}
+        @media (max-width:900px){#tmtp .lcs{width:110px;font-size:15px}#tmtp .qty{width:84px}#tmtp .qty .q{font-size:26px}#tmtp .card .no{width:44px;font-size:16px}#tmtp .obox .on{font-size:24px}}
     `;
 
     let PK = null; // 현재 열린 피킹 화면 상태
@@ -562,23 +809,24 @@
         root.id = 'tmtp';
         root.innerHTML = `
             <div class="hd">
-                <div class="ttl">📱 ピッキング</div>
+                <div class="ttl">📱 피킹</div>
                 <div class="prog"><div class="ptxt"></div><div class="bar"><i></i></div></div>
-                <button class="hb" data-act="cam">📷 カメラ</button>
-                <button class="hb" data-act="pause">⏸ 中断</button>
-                <button class="hb" data-act="cancel" style="background:#7f1d1d">✖ 取消</button>
-                <button class="hb done" data-act="finish">✅ 完了</button>
+                <button class="hb" data-act="cam">📷 카메라</button>
+                <button class="hb" data-act="pause">⏸ 중단</button>
+                <button class="hb" data-act="cancel" style="background:#7f1d1d">✖ 취소</button>
+                <button class="hb done" data-act="finish">✅ 완료</button>
             </div>
+            <div class="tabs"></div>
             <div class="sub">
-                <input type="text" inputmode="numeric" placeholder="JANスキャン / 手入力 → Enter" autocomplete="off">
-                <button class="sb on" data-flt="todo">未完了</button>
-                <button class="sb" data-flt="all">すべて</button>
+                <input type="text" inputmode="numeric" placeholder="JAN · Tracking 스캔 / 직접 입력 → Enter" autocomplete="off">
+                <button class="sb on" data-flt="todo">미완료</button>
+                <button class="sb" data-flt="all">전체</button>
             </div>
             <div class="list"></div>`;
         document.body.appendChild(root);
         document.documentElement.style.overflow = 'hidden';
 
-        PK = { batch: batch, root: root, filter: 'todo', keyBuf: '', keyAt: 0 };
+        PK = { batch: batch, root: root, filter: 'todo', keyBuf: '', keyAt: 0, oi: firstOpenOrder(batch, 0) };
         const input = root.querySelector('.sub input');
 
         root.addEventListener('click', (e) => {
@@ -593,6 +841,14 @@
             }
             const flt = e.target.closest('[data-flt]');
             if (flt) { PK.filter = flt.dataset.flt; render(); return; }
+            const oc = e.target.closest('[data-oi]');
+            if (oc) { PK.oi = parseInt(oc.dataset.oi, 10) || 0; render(); PK.root.querySelector('.list').scrollTop = 0; return; }
+            const nv = e.target.closest('[data-nav]');
+            if (nv) { moveOrder(parseInt(nv.dataset.nav, 10)); return; }
+            const kr = e.target.closest('[data-kreg]');
+            if (kr) { registerKujiLocal(kr.dataset.kreg, kr.dataset.grades || ''); return; }
+            if (e.target.closest('[data-ksheet]')) { window.open(KUJI_SHEET_EDIT_URL, '_blank'); return; }
+            if (e.target.closest('[data-kreload]')) { refreshKujiSheet(true); toastMsg('세트 기준 시트를 다시 읽는 중...', true); return; }
             const mb = e.target.closest('.mb');
             const card = e.target.closest('.card');
             if (!card) return;
@@ -627,6 +883,7 @@
 
         render();
         injectResumeButton();
+        refreshKujiSheet(false);
     }
 
     function closePicker(silent) {
@@ -639,54 +896,157 @@
         if (!silent) injectResumeButton();
     }
 
+    // [v1.7.0] 배송대행은 Tracking(상자) 단위, 그 외는 상품 개수
+    const isDelivery = (o) => String((o && o.type) || '').includes('delivery');
+    const unitOf = (o) => isDelivery(o) ? 'Tracking' : '개';
+    function orderStats(b, oi) {
+        let t = 0, p = 0;
+        b.lines.forEach(l => { if (l.oi !== oi) return; t += l.total; p += Math.min(b.picked[l.key] || 0, l.total); });
+        return { t: t, p: p, done: t > 0 && p >= t };
+    }
+    function firstOpenOrder(b, from) {
+        const n = b.orders.length;
+        for (let k = 0; k < n; k++) { const oi = (from + k) % n; if (!orderStats(b, oi).done) return oi; }
+        return Math.min(from, n - 1);
+    }
+    function moveOrder(d) {
+        if (!PK) return;
+        const n = PK.batch.orders.length;
+        PK.oi = (PK.oi + d + n) % n;
+        render();
+        PK.root.querySelector('.list').scrollTop = 0;
+    }
+    function registerKujiLocal(base, gradesCsv) {
+        const grades = String(gradesCsv || '').split(',').filter(Boolean).map(g => '-' + g).join(', ');
+        let grade = prompt('[' + base + '] 기준이 되는 등급을 입력해 주세요\n(목록에 있는 등급: ' + grades + ')', '1');
+        if (!grade) return;
+        grade = grade.replace(/-/g, '').trim();
+        const per = parseInt(prompt('-' + grade + ' 등급은 1세트에 몇 개입니까?', '2'), 10);
+        if (!per || per < 1) return;
+        try {
+            const local = JSON.parse(localStorage.getItem(KUJI_LOCAL_KEY) || '{}') || {};
+            local[base] = { grade: grade, perSet: per };
+            localStorage.setItem(KUJI_LOCAL_KEY, JSON.stringify(local));
+        } catch (e) { toastMsg('저장 실패', false); return; }
+        render();
+    }
+
+    function kujiBannerHtml(map) {
+        return Object.keys(map).map(base => {
+            const k = map[base];
+            let cls = 'kb warn', body = '';
+            if (k.status === 'ok') { cls = 'kb'; body = `<span class="big">${k.sets}세트</span><span style="font-size:13px;font-weight:600;color:#444">(-${esc(k.conf.grade)} 기준 ${k.conf.perSet}개 = 1세트)</span>`; }
+            else if (k.status === 'odd') body = `<span class="big">${fmtSets(k.sets)}세트 ⚠ 수량 확인</span><span style="font-size:13px;font-weight:600;color:#444">(-${esc(k.conf.grade)} 지금 ${k.refQty}개 / 1세트 ${k.conf.perSet}개)</span>`;
+            else if (k.status === 'noref') body = `<span>기준 등급 -${esc(k.conf.grade)} 이(가) 목록에 없습니다 → 세트수를 확인해 주세요</span>`;
+            else body = `<span>세트 기준 미등록</span><button data-ksheet="1" style="background:#e69500">📋 시트에 등록</button><button data-kreload="1" style="background:#0f766e">🔄 다시 읽기</button><button data-kreg="${esc(base)}" data-grades="${esc(k.grades.join(','))}">이 태블릿에 임시 등록</button>`;
+            return `<div class="${cls}"><span>🎯 ${esc(k.name)} (${esc(base)}) :</span>${body}</div>`;
+        }).join('') + (Object.keys(map).length && kujiSheet.error ? `<div class="kb warn" style="font-size:13px">⚠ 세트 기준 시트를 읽지 못했습니다 (${esc(kujiSheet.error)}) — 스크립트에 넣어 둔 기준·임시 등록만 사용 중</div>` : '');
+    }
+
     function render(flashKey, flashCls) {
         if (!PK) return;
         const b = PK.batch;
         const st = batchStats(b);
         const pct = st.total ? Math.round(st.picked / st.total * 100) : 0;
-        PK.root.querySelector('.ptxt').innerHTML = `<b>${st.picked}</b> / ${st.total} 点　(${st.linesDone}/${st.lines} 行・出庫 ${b.orders.length}件)`;
+        PK.root.querySelector('.ptxt').innerHTML = `<b>${st.picked}</b> / ${st.total}　(출고 ${b.orders.filter((o, i) => orderStats(b, i).done).length} / ${b.orders.length}건 완료)`;
         PK.root.querySelector('.bar i').style.width = pct + '%';
         PK.root.querySelectorAll('[data-flt]').forEach(x => x.classList.toggle('on', x.dataset.flt === PK.filter));
 
-        const list = PK.root.querySelector('.list');
-        const scrollTop = list.scrollTop;
-        let html = '';
-        let lastLocGroup = null;
+        // 출고건 탭
+        const tabs = PK.root.querySelector('.tabs');
+        tabs.innerHTML = (b.orders.length > 1 ? '<button class="nv" data-nav="-1">◀</button>' : '') +
+            b.orders.map((o, oi) => {
+                const s2 = orderStats(b, oi);
+                return `<button class="oc${oi === PK.oi ? ' cur' : ''}${s2.done ? ' done' : ''}" data-oi="${oi}">${s2.done ? '✓ ' : ''}${esc(o.outNum)}<small>${s2.p} / ${s2.t}</small></button>`;
+            }).join('') +
+            (b.orders.length > 1 ? '<button class="nv" data-nav="1">▶</button>' : '');
+        const curTab = tabs.querySelector('.oc.cur');
+        if (curTab && curTab.scrollIntoView) curTab.scrollIntoView({ inline: 'center', block: 'nearest' });
+
+        const oi = PK.oi;
+        const o = b.orders[oi];
+        const os = orderStats(b, oi);
+        const kmap = kujiInfoFor(b, oi);
+
+        // 출고건 정보 (포장 화면 머리 부분처럼)
+        const tags = (o.requests || []).map(x => `<span class="tag${/무검품/.test(x) ? ' red' : ''}">${esc(x)}</span>`).join('') +
+            (o.isOcean ? '<span class="tag blue">해운(OCEAN)</span>' : '');
+        let html = `<div class="obox${o.isOcean ? ' ocean' : ''}">
+            <div class="r1"><span class="on">${esc(o.outNum)}</span><span class="rv">${esc(o.receiver)}</span><span class="op">${os.done ? '✅ ' : ''}${os.p} / ${os.t} ${unitOf(o)}</span></div>
+            ${tags ? `<div>${tags}</div>` : ''}
+            ${o.requirementMsg ? `<div class="memo">${esc(o.requirementMsg)}</div>` : ''}
+            ${kujiBannerHtml(kmap)}
+        </div>`;
+
         let shown = 0;
         b.lines.forEach(l => {
+            if (l.oi !== oi) return;
             const p = Math.min(b.picked[l.key] || 0, l.total);
             const full = p >= l.total;
             if (PK.filter === 'todo' && full && l.key !== flashKey) return;
             shown++;
-            const grp = String(l.loc).split(/[-\s]/)[0];
-            if (grp !== lastLocGroup) { html += `<div class="locH">■ ${esc(grp)}</div>`; lastLocGroup = grp; }
             const jan = String(l.jan);
             const janHtml = jan.length > 4 ? `${esc(jan.slice(0, -4))}<b>${esc(jan.slice(-4))}</b>` : `<b>${esc(jan)}</b>`;
-            const chips = l.alloc.map(a => {
-                const o = b.orders[a.oi];
-                return `<span class="chip${o.isOcean ? ' oc' : ''}">${esc(o.outNum)} <b>×${a.qty}</b></span>`;
-            }).join('');
-            const cls = 'card' + (full ? ' full' : (p > 0 ? ' part' : '')) + (l.key === flashKey ? ' ' + (flashCls || 'flash') : '');
+            if (l.isTrk) {
+                // [v1.7.0] 배송대행 Tracking 줄: 상품 정보 없이 Tracking 번호 + 로케이션만
+                const cls = 'card trk' + (full ? ' full' : '') + (l.key === flashKey ? ' ' + (flashCls || 'flash') : '');
+                html += `
+                <div class="${cls}" data-key="${esc(l.key)}">
+                    <div class="no">${esc(l.no)}</div>
+                    <div class="body"><div class="info">
+                        <div class="tkl">Tracking</div>
+                        <div class="tkn">${janHtml}</div>
+                    </div></div>
+                    <div class="lcs">${l.locs.map(x => esc(x.name)).join('<br>')}</div>
+                    <div class="cnt">
+                        <div class="num">${full ? '✓ ' : ''}${p}<small> / 1</small></div>
+                        <div class="btns">${full ? '<button class="mb" data-d="minus">취소</button>' : '<button class="mb all" data-d="all">체크</button>'}</div>
+                    </div>
+                </div>`;
+                return;
+            }
+            // 수량 칸: 쿠지 세트 / 옵션 PCS
+            let qtyExtra = '';
+            let rowCls = '';
+            if (l.isMain && l.setDiv > 0) { qtyExtra = `<div class="st">(${Math.floor(l.total / l.setDiv)} set)</div>`; rowCls = ' main'; }
+            else if (l.isKuji && !l.isMain && !l.isSub) {
+                const m = jan.trim().match(/^(\d{8,14})\s*-\s*([0-9A-Za-z]+)$/);
+                const k = m ? kmap[m[1]] : null;
+                if (k && (k.status === 'ok' || k.status === 'odd') && String(k.conf.grade) === m[2]) { qtyExtra = `<div class="st">(${fmtSets(k.sets)} set)</div>`; rowCls = ' main'; }
+            }
+            if (l.pcs > 0 && (l.isHalf || !l.isKuji)) { qtyExtra += `<div class="pc">×${l.pcs}pcs${l.total > 1 ? `<br>= ${l.total * l.pcs}개` : ''}</div>`; rowCls = ' half'; }
+            else if (l.isHalf) qtyExtra += '<div class="warn">하프 · 개수 확인</div>';
+            if (l.isSub) rowCls += ' ksub';
+            const locHtml = l.locs.map(x => `${esc(x.name)} : ${x.qty}개`).join('<br>') +
+                (l.tracking ? `<div class="tk">…${esc(String(l.tracking).slice(-6))}</div>` : '');
+            const cls = 'card' + rowCls + (full ? ' full' : (p > 0 ? ' part' : '')) + (l.key === flashKey ? ' ' + (flashCls || 'flash') : '');
             html += `
                 <div class="${cls}" data-key="${esc(l.key)}">
-                    <div class="loc">${esc(l.loc)}</div>
+                    <div class="no">${esc(l.no)}</div>
                     <div class="body">
                         <div class="img">${l.img ? `<img src="${esc(l.img)}" alt="">` : ''}</div>
                         <div class="info">
-                            <div class="nm">${esc(l.name)}</div>
+                            <div class="nm">${l.isSub ? '<span class="sb2">└</span>' : ''}${esc(l.name)}</div>
                             <div class="jan">${janHtml}</div>
                             ${l.option ? `<span class="opt">${esc(l.option)}</span>` : ''}
-                            <div class="alloc">${chips}</div>
                         </div>
                     </div>
+                    <div class="qty"><div class="q">${l.total}</div>${qtyExtra}</div>
+                    <div class="lcs">${locHtml}</div>
                     <div class="cnt">
                         <div class="num">${full ? '✓ ' : ''}${p}<small> / ${l.total}</small></div>
-                        ${l.pcs ? `<div class="pcs">×${l.pcs}pcs = ${l.total * l.pcs}個</div>` : (l.isHalf ? '<div class="pcs">⚠ PCS確認</div>' : '')}
-                        <div class="btns"><button class="mb" data-d="minus">−1</button><button class="mb all" data-d="all">全部</button></div>
+                        <div class="btns"><button class="mb" data-d="minus">−1</button><button class="mb all" data-d="all">전부</button></div>
                     </div>
                 </div>`;
         });
-        if (!shown) html = `<div class="empty">🎉 すべてピッキング完了<br><span style="font-size:16px;color:#475569">右上の「✅ 完了」で仕分けリストを印刷</span></div>`;
+        if (!shown) {
+            const next = firstOpenOrder(b, (oi + 1) % b.orders.length);
+            html += (st.picked >= st.total)
+                ? `<div class="empty">🎉 모든 출고건 피킹 완료<br><span style="font-size:16px;color:#475569">오른쪽 위 「✅ 완료」를 눌러 분류 리스트를 인쇄하세요</span></div>`
+                : `<div class="empty">✅ 이 출고건은 피킹 완료<br><button class="hb" style="background:#0f766e;margin-top:14px" data-oi="${next}">다음 출고건 ${esc(b.orders[next].outNum)} ▶</button></div>`;
+        }
+        const list = PK.root.querySelector('.list');
+        const scrollTop = list.scrollTop;
         list.innerHTML = html;
         list.scrollTop = scrollTop;
         if (flashKey) {
@@ -696,16 +1056,30 @@
     }
     function cssEsc(s) { return String(s).replace(/[^A-Za-z0-9_-]/g, ''); }
 
+    // 한 줄에 +1 하고, 출고건이 다 끝나면 다음 출고건으로 넘어감
+    function afterPick(l) {
+        const b = PK.batch;
+        const os = orderStats(b, l.oi);
+        if (os.done) {
+            const st = batchStats(b);
+            if (st.picked >= st.total) { toastMsg('🎉 모든 출고건 피킹 완료', true); render(l.key); return; }
+            toastMsg(`✅ ${esc(b.orders[l.oi].outNum)} 완료 → 다음 출고건`, true);
+            render(l.key);
+            setTimeout(() => { if (PK && PK.oi === l.oi) { PK.oi = firstOpenOrder(b, (l.oi + 1) % b.orders.length); render(); PK.root.querySelector('.list').scrollTop = 0; } }, 900);
+            return;
+        }
+        render(l.key);
+    }
     function addPick(key, d) {
         const b = PK.batch;
         const l = b.lines.find(x => x.key === key);
         if (!l) return;
         const cur = b.picked[key] || 0;
         const next = Math.max(0, Math.min(l.total, cur + d));
-        if (d > 0 && cur >= l.total) { beep(false); toastMsg('数量オーバー', false); render(key, 'over'); return; }
+        if (d > 0 && cur >= l.total) { beep(false); toastMsg('수량 초과', false); render(key, 'over'); return; }
         b.picked[key] = next;
         saveBatch(b);
-        render(key);
+        if (d > 0) afterPick(l); else render(key);
     }
     function setPick(key, v) {
         const b = PK.batch;
@@ -713,29 +1087,61 @@
         if (!l) return;
         b.picked[key] = v === 'all' ? l.total : v;
         saveBatch(b);
-        render(key);
+        afterPick(l);
+    }
+    function pickOne(l) {
+        const b = PK.batch;
+        if ((b.picked[l.key] || 0) >= l.total) { beep(false); toastMsg('수량 초과', false); render(l.key, 'over'); return; }
+        b.picked[l.key] = (b.picked[l.key] || 0) + 1;
+        saveBatch(b);
+        beep(true);
+        toastMsg(`No.${esc(l.no)}　${b.picked[l.key]} / ${l.total}`, true);
+        afterPick(l);
+    }
+    // 등급 표시: 잔코드에서 JAN 뒤에 붙은 부분 (-1, -A, S10, -H)
+    function gradeOf(l) {
+        const rest = String(l.jan).trim().slice(String(l.janBase).length).trim();
+        if (l.isMain) return '메인(세트)' + (rest ? ' ' + rest : '');
+        return rest || '';
     }
 
+    // [v1.5.0] 스캔: 지금 보고 있는 출고건 안에서만 찾음.
+    //  - 잔코드 전체가 같거나, 잔코드 앞의 JAN(13자리 등)이 같으면 해당
+    //  - 같은 JAN에 등급(-1, -2, -A …)이 여러 개면 화면에서 고르게 함
+    //  - 다른 출고건 상품이면 알려 주고 그 출고건으로 이동할 수 있게 함
     function handleScan(raw) {
         if (!PK) return;
         const code = normJan(raw);
         if (!code) return;
         const b = PK.batch;
-        const hits = b.lines.filter(l => l.janN === code || l.janBase === code);
-        if (!hits.length) {
-            beep(false); toastMsg(`リストにないJAN<br><span style="font-size:16px">${esc(raw)}</span>`, false); return;
+        const match = (l) => l.janN === code || normJan(l.janBase) === code;
+        const cur = b.lines.filter(l => l.oi === PK.oi && match(l));
+        if (!cur.length) {
+            const other = b.lines.filter(match);
+            beep(false);
+            if (other.length) {
+                const ois = Array.from(new Set(other.map(l => l.oi)));
+                modal(`이 상품은 지금 출고건(<b>${esc(b.orders[PK.oi].outNum)}</b>)이 아니라<br><b style="color:#dc2626">${ois.map(i => esc(b.orders[i].outNum)).join(', ')}</b> 출고건 상품입니다.`,
+                    ois.map(i => ({ label: `${b.orders[i].outNum}(으)로 이동`, color: '#0f766e', fn: () => { PK.oi = i; render(); PK.root.querySelector('.list').scrollTop = 0; } }))
+                        .concat([{ label: '닫기', color: '#6b7280' }]));
+            } else {
+                toastMsg(`목록에 없는 JAN<br><span style="font-size:16px">${esc(raw)}</span>`, false);
+            }
+            return;
         }
-        // 아직 덜 집은 줄 중 화면 순서(로케이션 순)로 첫 번째에 +1
-        const target = hits.find(l => (b.picked[l.key] || 0) < l.total);
-        if (!target) {
-            beep(false); toastMsg('この商品はすべてピッキング済み', false); render(hits[0].key, 'over'); return;
-        }
-        b.picked[target.key] = (b.picked[target.key] || 0) + 1;
-        saveBatch(b);
+        const exact = cur.filter(l => l.janN === code);
+        const pool = exact.length ? exact : cur;
+        const open = pool.filter(l => (b.picked[l.key] || 0) < l.total);
+        if (!open.length) { beep(false); toastMsg('이 상품은 이미 다 피킹했습니다', false); render(pool[0].key, 'over'); return; }
+        if (open.length === 1) { pickOne(open[0]); return; }
+        // 같은 바코드에 등급·옵션이 여러 개 → 고르기
         beep(true);
-        const p = b.picked[target.key];
-        toastMsg(`${esc(target.loc)}　${p} / ${target.total}`, true);
-        render(target.key);
+        modal(`같은 바코드 상품이 <b>${open.length}개</b> 있습니다.<br>집은 상품을 골라 주세요.`,
+            open.map(l => ({
+                label: `No.${l.no}  ${gradeOf(l)}${l.option ? ' [' + l.option + ']' : ''}  ${l.loc}  (${b.picked[l.key] || 0}/${l.total})`,
+                color: l.isMain ? '#b45309' : '#0f766e',
+                fn: () => pickOne(l)
+            })).concat([{ label: '취소', color: '#6b7280' }]), true);
     }
 
     let toastTimer = null;
@@ -758,7 +1164,7 @@
         closeCamera();
         const wrap = document.createElement('div');
         wrap.id = 'tmtp-cam';
-        wrap.innerHTML = `<div class="cmsg">JANバーコードを枠に入れてください</div><video playsinline muted></video><button>閉じる</button>`;
+        wrap.innerHTML = `<div class="cmsg">JAN 바코드를 화면 안에 맞춰 주세요</div><video playsinline muted></video><button>닫기</button>`;
         document.body.appendChild(wrap);
         wrap.querySelector('button').onclick = closeCamera;
         const video = wrap.querySelector('video');
@@ -784,16 +1190,16 @@
                 };
                 loop();
             } else {
-                msg.textContent = 'カメラ準備中...';
+                msg.textContent = '카메라 준비 중...';
                 if (!window.ZXing) await loadScript(ZXING_URL);
                 const reader = new window.ZXing.BrowserMultiFormatReader();
                 camState.stop = () => { try { reader.reset(); } catch (e) {} };
-                msg.textContent = 'JANバーコードを枠に入れてください';
+                msg.textContent = 'JAN 바코드를 화면 안에 맞춰 주세요';
                 await reader.decodeFromConstraints({ video: { facingMode: 'environment' } }, video, (res) => { if (res) onCode(res.getText()); });
             }
         } catch (e) {
             console.error('[태블릿피킹] 카메라 오류', e);
-            msg.textContent = 'カメラを起動できません: ' + (e.message || e) + '（ブラウザのカメラ許可を確認）';
+            msg.textContent = '카메라를 켤 수 없습니다: ' + (e.message || e) + ' (브라우저 카메라 권한을 확인해 주세요)';
         }
     }
     function closeCamera() {
@@ -820,15 +1226,15 @@
     // [v1.1.0] 피킹 취소: 시스템 Picking 상태를 풀어서 다른 사람이 가져갈 수 있게 함
     function onCancelBatch() {
         const b = PK.batch;
-        modal(`このピッキング（出庫 ${b.orders.length}件）を取り消しますか？<br><span style="font-size:14px;color:#475569">システムの「ピッキング中」を解除して、ほかの人がピッキングできる状態に戻します。</span>`, [
-            { label: '取り消す', color: '#dc2626', fn: async () => {
-                const ov = overlayMsg('取消中...');
+        modal(`이 피킹(출고 ${b.orders.length}건)을 취소할까요?<br><span style="font-size:14px;color:#475569">시스템의 「피킹 중」을 풀어서 다른 사람이 피킹할 수 있는 상태로 되돌립니다.</span>`, [
+            { label: '취소하기', color: '#dc2626', fn: async () => {
+                const ov = overlayMsg('취소 중...');
                 const ok = await cancelSystemPicking(b.orders);
                 ov.close();
-                if (!ok) { modal('システムのピッキング取消に失敗しました。<br>出庫管理画面の「PICKING取消」で解除してください。', [{ label: 'OK', color: '#6b7280' }]); return; }
+                if (!ok) { modal('시스템 피킹 취소에 실패했습니다.<br>출고관리 화면의 「PICKING취소」로 풀어 주세요.', [{ label: 'OK', color: '#6b7280' }]); return; }
                 clearBatch(); closePicker(); location.reload();
             } },
-            { label: '戻る', color: '#6b7280' }
+            { label: '돌아가기', color: '#6b7280' }
         ]);
     }
 
@@ -839,16 +1245,16 @@
         const doPrint = () => choosePaper((paper) => {
             const ok = printSortSheet(b, paper);
             if (!ok) return;
-            modal('仕分けリストを開きました。<br>このピッキングを終了しますか？', [
-                { label: '終了する', color: '#16a34a', fn: () => { clearBatch(); closePicker(); } },
-                { label: 'まだ続ける', color: '#6b7280' }
+            modal('분류 리스트를 열었습니다.<br>이 피킹을 끝낼까요?', [
+                { label: '끝내기', color: '#16a34a', fn: () => { clearBatch(); closePicker(); } },
+                { label: '계속하기', color: '#6b7280' }
             ]);
         });
         if (short.length) {
-            const listHtml = short.slice(0, 8).map(l => `<li>${esc(l.loc)}　${esc(l.name).slice(0, 24)}　<b>${(b.picked[l.key] || 0)}/${l.total}</b></li>`).join('');
-            modal(`まだ <b style="color:#dc2626">${st.total - st.picked}点</b> 残っています。<ul style="text-align:left;font-size:14px;margin:8px 0">${listHtml}${short.length > 8 ? `<li>…他 ${short.length - 8}行</li>` : ''}</ul>残りは「欠品」として印刷しますか？`, [
-                { label: '欠品として印刷', color: '#dc2626', fn: doPrint },
-                { label: '戻る', color: '#6b7280' }
+            const listHtml = short.slice(0, 8).map(l => `<li><b>${esc(b.orders[l.oi].outNum)}</b> No.${esc(l.no)}　${esc(l.loc)}　${l.isTrk ? 'Tracking …' + esc(String(l.tracking).slice(-6)) : esc(l.name).slice(0, 20)}　<b>${(b.picked[l.key] || 0)}/${l.total}</b></li>`).join('');
+            modal(`아직 <b style="color:#dc2626">${st.total - st.picked}개</b> 남아 있습니다.<ul style="text-align:left;font-size:14px;margin:8px 0">${listHtml}${short.length > 8 ? `<li>…외 ${short.length - 8}줄</li>` : ''}</ul>남은 것은 「결품」으로 인쇄할까요?`, [
+                { label: '결품으로 인쇄', color: '#dc2626', fn: doPrint },
+                { label: '돌아가기', color: '#6b7280' }
             ]);
         } else doPrint();
     }
@@ -860,19 +1266,20 @@
         try { last = localStorage.getItem(PAPER_KEY) || 'a4'; } catch (e) {}
         const opts = [
             { v: 'a4', label: '🖨 A4' },
-            { v: '80', label: '🧾 80mm ロール' },
-            { v: '58', label: '🧾 58mm ロール' }
+            { v: '100', label: '🧾 100mm 롤지' },
+            { v: '80', label: '🧾 80mm 롤지' },
+            { v: '58', label: '🧾 58mm 롤지' }
         ];
         opts.sort((x, y) => (y.v === last) - (x.v === last));
-        modal('印刷する用紙を選んでください', opts.map((o, i) => ({
-            label: o.label + (i === 0 ? '（前回）' : ''),
+        modal('인쇄할 용지를 골라 주세요', opts.map((o, i) => ({
+            label: o.label + (i === 0 ? ' (지난번)' : ''),
             color: i === 0 ? '#16a34a' : '#334155',
             fn: () => { try { localStorage.setItem(PAPER_KEY, o.v); } catch (e) {} cb(o.v); }
-        })).concat([{ label: '戻る', color: '#6b7280' }]));
+        })).concat([{ label: '돌아가기', color: '#6b7280' }]));
     }
 
     function printSortSheet(b, paper) {
-        if (paper === '80' || paper === '58') return printReceipt(b, paper);
+        if (paper === '100' || paper === '80' || paper === '58') return printReceipt(b, paper);
         const per = allocate(b);
         const st = batchStats(b);
         const created = new Date(b.createdAt);
@@ -883,19 +1290,7 @@
             const need = rows.reduce((a, r) => a + r.need, 0);
             const got = rows.reduce((a, r) => a + r.got, 0);
             shortTotal += need - got;
-            // [v1.2.0] 상품 리스트는 인쇄하지 않고, 欠品(덜 집은 상품)만 표시
-            const trs = rows.filter(r => r.need > r.got).map(r => {
-                const sh = r.need - r.got;
-                const jan = String(r.jan);
-                return `<tr class="${sh ? 'sh' : ''}">
-                    <td class="ck">${sh === r.need ? '' : '☐'}</td>
-                    <td class="lc">${esc(r.loc)}</td>
-                    <td class="im">${r.img ? `<img src="${esc(r.img)}">` : ''}</td>
-                    <td class="nm">${esc(r.name)}${r.option ? `<div class="op">${esc(r.option)}</div>` : ''}${r.tracking ? `<div class="tr">Tracking …${esc(r.tracking.slice(-6))}</div>` : ''}</td>
-                    <td class="jn">${esc(jan.slice(0, -4))}<b>${esc(jan.slice(-4))}</b></td>
-                    <td class="qt"><b>${r.got}</b>${sh ? `<div class="kp">欠品 ${sh}</div>` : ''}${r.pcs ? `<div class="pc">×${r.pcs}pcs</div>` : ''}</td>
-                </tr>`;
-            }).join('');
+            // [v1.6.0] 상품 정보는 인쇄하지 않음 (출고건 정보 + 결품 개수만)
             const reqs = (o.requests || []).map(x => `<span class="rq">${esc(x)}</span>`).join('') + (o.requirementMsg ? `<div class="rm">📝 ${esc(o.requirementMsg)}</div>` : '');
             return `<section class="ord${o.isOcean ? ' ocean' : ''}">
                 <div class="oh">
@@ -904,19 +1299,18 @@
                         <div class="on">${esc(o.outNum)}${o.isOcean ? ' <span class="oct">OCEAN</span>' : ''}</div>
                         <div class="rv">${esc(o.receiver)}</div>
                     </div>
-                    <div class="os">${got} / ${need} 点${need - got ? `<div class="kp">欠品 ${need - got}</div>` : ''}</div>
+                    <div class="os">${got} / ${need} ${isDelivery(o) ? 'Tracking' : '개'}${need - got ? `<div class="kp">${isDelivery(o) ? '미확인' : '결품'} ${need - got}</div>` : ''}</div>
                 </div>
                 ${reqs ? `<div class="rqs">${reqs}</div>` : ''}
-                ${trs ? `<div class="kh">欠品</div><table><tbody>${trs}</tbody></table>` : ''}
             </section>`;
         }).join('');
 
         const qrJs = b.orders.map((o, oi) => `try{new QRCode(document.getElementById("qr${oi}"),{text:${JSON.stringify(String(o.outNum))},width:56,height:56,correctLevel:1})}catch(e){}`).join('');
-        const html = `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-            <title>仕分けリスト ${fmt(created)}</title>
+        const html = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="tm-tablet-print" content="1"><meta name="viewport" content="width=device-width,initial-scale=1">
+            <title>분류 리스트 ${fmt(created)}</title>
             <style>
                 @page{size:A4;margin:8mm}
-                body{font-family:"Hiragino Sans","Meiryo","Malgun Gothic",sans-serif;margin:0;color:#000;background:#e5e7eb}
+                body{font-family:"Malgun Gothic","Hiragino Sans","Meiryo",sans-serif;margin:0;color:#000;background:#e5e7eb}
                 .wrap{max-width:194mm;margin:0 auto;background:#fff;padding:6mm}
                 .top{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #000;padding-bottom:4px;margin-bottom:6px}
                 .top h1{font-size:22px;margin:0}
@@ -952,10 +1346,10 @@
                 .np button{font-size:18px;font-weight:900;padding:10px 30px;border:none;border-radius:10px;background:#22c55e;color:#fff}
                 @media print{body{background:#fff}.np{display:none}.wrap{padding:0;max-width:none}}
             </style></head><body>
-            <div class="np"><button onclick="window.print()">🖨 印刷</button></div>
+            <div class="np"><button onclick="window.print()">🖨 인쇄</button></div>
             <div class="wrap">
-                <div class="top"><h1>仕分けリスト</h1>
-                    <div class="sm">${fmt(created)} 開始 / ${fmt(new Date())} 完了<br>出庫 ${b.orders.length}件・${st.picked} / ${st.total} 点${shortTotal ? ` <span class="kp">欠品 ${shortTotal}点</span>` : ''}</div>
+                <div class="top"><h1>분류 리스트</h1>
+                    <div class="sm">${fmt(created)} 시작 / ${fmt(new Date())} 완료<br>출고 ${b.orders.length}건${shortTotal ? ` <span class="kp">미완료 ${shortTotal}</span>` : ''}</div>
                 </div>
                 ${blocks}
             </div>
@@ -972,7 +1366,7 @@
             <\/script>
             </body></html>`;
         const w = window.open('', '_blank');
-        if (!w) { modal('ポップアップがブロックされました。ブラウザでポップアップを許可してください。', [{ label: 'OK', color: '#6b7280' }]); return false; }
+        if (!w) { modal('팝업이 차단되었습니다. 브라우저에서 팝업을 허용해 주세요.', [{ label: 'OK', color: '#6b7280' }]); return false; }
         w.document.open(); w.document.write(html); w.document.close();
         return true;
     }
@@ -980,8 +1374,9 @@
     /* ---------- [v1.1.0] 롤지(80mm/58mm) 仕分けリスト: 블루투스 모바일 프린터용 ---------- */
     function printReceipt(b, paper) {
         const per = allocate(b);
-        const W = paper === '58' ? 48 : 72;     // 인쇄 폭(mm)
-        const big = paper === '58' ? 15 : 19;
+        // 인쇄 폭(mm): 용지 폭에서 여백을 뺀 값. 100mm는 [v1.5.0] 추가 (프린터 구매 후 실제 폭에 맞춰 조정)
+        const W = paper === '58' ? 48 : (paper === '100' ? 92 : 72);
+        const big = paper === '58' ? 15 : (paper === '100' ? 22 : 19);
         const d = new Date();
         const ts = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
         let shortAll = 0;
@@ -989,31 +1384,20 @@
             const rows = per[oi];
             const need = rows.reduce((a, r) => a + r.need, 0), got = rows.reduce((a, r) => a + r.got, 0);
             shortAll += need - got;
-            // [v1.2.0] 상품 리스트는 인쇄하지 않고, 欠品(덜 집은 상품)만 표시
-            const items = rows.filter(r => r.need > r.got).map(r => {
-                const sh = r.need - r.got;
-                const jan = String(r.jan);
-                return `<div class="it${sh ? ' sh' : ''}">
-                    <div class="l1"><span class="ck">${sh === r.need ? '✕' : '☐'}</span><span class="lc">${esc(r.loc)}</span><span class="q">×${r.got}</span></div>
-                    <div class="nm">${esc(r.name)}${r.option ? ` <b>[${esc(r.option)}]</b>` : ''}</div>
-                    <div class="jn">${esc(jan.slice(0, -4))}<b>${esc(jan.slice(-4))}</b>${r.pcs ? `　×${r.pcs}pcs` : ''}</div>
-                    ${sh ? `<div class="kp">欠品 ${sh}</div>` : ''}
-                </div>`;
-            }).join('');
+            // [v1.6.0] 상품 정보는 인쇄하지 않음 (출고건 정보 + 결품 개수만)
             const reqs = (o.requests || []).map(x => `<span class="rq">${esc(x)}</span>`).join('') + (o.requirementMsg ? `<div>📝 ${esc(o.requirementMsg)}</div>` : '');
             return `<div class="ord">
-                <div class="oh"><div class="qr" id="qr${oi}"></div><div><div class="on">${esc(o.outNum)}</div><div class="rv">${esc(o.receiver)}${o.isOcean ? ' <b>[OCEAN]</b>' : ''}</div><div class="ct">${got}/${need}点${need - got ? ` <span class="kp">欠品${need - got}</span>` : ''}</div></div></div>
+                <div class="oh"><div class="qr" id="qr${oi}"></div><div><div class="on">${esc(o.outNum)}</div><div class="rv">${esc(o.receiver)}${o.isOcean ? ' <b>[OCEAN]</b>' : ''}</div><div class="ct">${got}/${need}${isDelivery(o) ? ' Tracking' : '개'}${need - got ? ` <span class="kp">${isDelivery(o) ? '미확인' : '결품'}${need - got}</span>` : ''}</div></div></div>
                 ${reqs ? `<div class="rqs">${reqs}</div>` : ''}
-                ${items ? `<div class="kh">欠品</div>${items}` : ''}
             </div>`;
         }).join('');
         const qrJs = b.orders.map((o, oi) => `try{new QRCode(document.getElementById("qr${oi}"),{text:${JSON.stringify(String(o.outNum))},width:${paper === '58' ? 44 : 56},height:${paper === '58' ? 44 : 56},correctLevel:1})}catch(e){}`).join('');
-        const html = `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-            <title>仕分け ${ts}</title>
+        const html = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="tm-tablet-print" content="1"><meta name="viewport" content="width=device-width,initial-scale=1">
+            <title>분류 ${ts}</title>
             <style>
                 @page{size:${paper}mm auto;margin:2mm}
-                body{margin:0;font-family:"Hiragino Sans","Meiryo",sans-serif;color:#000;background:#e5e7eb}
-                .wrap{width:${W}mm;margin:0 auto;background:#fff;padding:2mm;font-size:${paper === '58' ? 10 : 12}px}
+                body{margin:0;font-family:"Malgun Gothic","Hiragino Sans","Meiryo",sans-serif;color:#000;background:#e5e7eb}
+                .wrap{width:${W}mm;margin:0 auto;background:#fff;padding:2mm;font-size:${paper === '58' ? 10 : (paper === '100' ? 14 : 12)}px}
                 .tp{text-align:center;font-weight:900;font-size:${big - 3}px;border-bottom:2px solid #000;padding-bottom:2px}
                 .tp small{display:block;font-size:10px;font-weight:400}
                 .ord{border-bottom:2px dashed #000;padding:3mm 0;break-inside:avoid;page-break-inside:avoid}
@@ -1038,9 +1422,9 @@
                 .np button{font-size:18px;font-weight:900;padding:10px 30px;border:none;border-radius:10px;background:#22c55e;color:#fff}
                 @media print{body{background:#fff}.np{display:none}.wrap{padding:0}}
             </style></head><body>
-            <div class="np"><button onclick="window.print()">🖨 印刷</button></div>
+            <div class="np"><button onclick="window.print()">🖨 인쇄</button></div>
             <div class="wrap">
-                <div class="tp">仕分けリスト<small>${ts}　出庫${b.orders.length}件${shortAll ? `　欠品${shortAll}点` : ''}</small></div>
+                <div class="tp">분류 리스트<small>${ts}　출고 ${b.orders.length}건${shortAll ? `　미완료 ${shortAll}` : ''}</small></div>
                 ${blocks}
             </div>
             <script>
@@ -1054,7 +1438,7 @@
                 })();
             <\/script></body></html>`;
         const w = window.open('', '_blank');
-        if (!w) { modal('ポップアップがブロックされました。ブラウザでポップアップを許可してください。', [{ label: 'OK', color: '#6b7280' }]); return false; }
+        if (!w) { modal('팝업이 차단되었습니다. 브라우저에서 팝업을 허용해 주세요.', [{ label: 'OK', color: '#6b7280' }]); return false; }
         w.document.open(); w.document.write(html); w.document.close();
         return true;
     }
@@ -1062,18 +1446,18 @@
     /* ==========================================================
      * 작은 UI 도구 (모달 / 로딩)
      * ========================================================== */
-    function modal(html, buttons) {
+    function modal(html, buttons, stack) {
         const m = document.createElement('div');
-        m.style.cssText = 'position:fixed;inset:0;z-index:100002;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;font-family:"Hiragino Sans","Meiryo",sans-serif';
+        m.style.cssText = 'position:fixed;inset:0;z-index:100002;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;font-family:"Malgun Gothic","Hiragino Sans","Meiryo",sans-serif';
         m.innerHTML = `<div style="background:#fff;border-radius:16px;max-width:520px;width:92vw;padding:22px;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,.35)">
             <div style="font-size:17px;line-height:1.6;color:#0f172a;margin-bottom:18px">${html}</div>
             <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"></div></div>`;
-        const row = m.querySelector('div > div:last-child');
+        const row = m.firstElementChild.lastElementChild; // 버튼 줄 (예전 선택자는 바깥 상자를 잡아서 버튼 정렬이 어긋났음)
         buttons.forEach(bt => {
             const x = document.createElement('button');
             x.type = 'button';
             x.textContent = bt.label;
-            x.style.cssText = `flex:1;min-width:130px;min-height:52px;border:none;border-radius:12px;color:#fff;font-size:16px;font-weight:900;background:${bt.color || '#334155'}`;
+            x.style.cssText = `flex:1;min-width:130px;min-height:52px;border:none;border-radius:12px;color:#fff;font-size:16px;font-weight:900;background:${bt.color || '#334155'};${stack ? 'flex:1 1 100%;text-align:left;padding:0 16px;font-size:18px;min-height:58px;' : ''}`;
             x.onclick = () => { m.remove(); if (bt.fn) bt.fn(); };
             row.appendChild(x);
         });
@@ -1094,7 +1478,7 @@
     const isPackingList = () => /^\/admin\/shipping\/packing\/?$/.test(location.pathname);
     const isLoginPage = () => /login/i.test(location.pathname);
     function injectBottomBar() {
-        if (isLoginPage()) return;
+        if (isLoginPage() || !/^https?:$/.test(location.protocol) || document.querySelector('meta[name="tm-tablet-print"]')) return; // 인쇄용 새 창에는 표시 안 함
         let bar = document.getElementById('tm-tablet-pick-bar');
         if (!bar) {
             if (!document.body) return;
@@ -1104,8 +1488,8 @@
             const btnCss = 'border:none;border-radius:10px;padding:12px 18px;font-size:17px;font-weight:bold;';
             if (isPackingList()) {
                 bar.innerHTML =
-                    '<span style="font-size:12px;font-weight:bold;color:#0f766e;">✅ タブレットピッキング ON</span>' +
-                    '<button type="button" data-act="start" style="' + btnCss + 'background:#0f766e;color:#fff;">📱 ピッキング開始</button>' +
+                    '<span style="font-size:12px;font-weight:bold;color:#0f766e;">✅ 태블릿 피킹 ON</span>' +
+                    '<button type="button" data-act="start" style="' + btnCss + 'background:#0f766e;color:#fff;">📱 피킹 시작</button>' +
                     '<button type="button" data-act="filter" style="' + btnCss + 'background:#fff;color:#0f766e;border:2px solid #0f766e;"></button>';
                 bar.querySelector('[data-act="start"]').onclick = onStartClick;
                 bar.querySelector('[data-act="filter"]').onclick = () => {
@@ -1116,8 +1500,8 @@
                 };
             } else {
                 bar.innerHTML =
-                    '<span style="font-size:12px;font-weight:bold;color:#0f766e;">✅ タブレットピッキング ON</span>' +
-                    '<button type="button" data-act="go" style="' + btnCss + 'background:#0f766e;color:#fff;">📱 ピッキング画面へ</button>';
+                    '<span style="font-size:12px;font-weight:bold;color:#0f766e;">✅ 태블릿 피킹 ON</span>' +
+                    '<button type="button" data-act="go" style="' + btnCss + 'background:#0f766e;color:#fff;">📱 피킹 화면으로</button>';
                 bar.querySelector('[data-act="go"]').onclick = () => { location.href = location.origin + '/admin/shipping/packing'; };
             }
             document.body.appendChild(bar);
@@ -1125,11 +1509,11 @@
         if (isPackingList()) {
             const n = document.querySelectorAll('input.sub_checkbox:checked').length;
             const sb = bar.querySelector('[data-act="start"]');
-            const txt = n ? `📱 ピッキング開始 (${n}件)` : '📱 ピッキング開始';
+            const txt = n ? `📱 피킹 시작 (${n}건)` : '📱 피킹 시작';
             if (sb && sb.textContent !== txt) sb.textContent = txt;
             const fb = bar.querySelector('[data-act="filter"]');
             const sel = document.querySelector('select[name="s_picking"]');
-            const ftxt = sel && sel.value === '2' ? '👀 全部表示' : '🆓 未ピッキングのみ';
+            const ftxt = sel && sel.value === '2' ? '👀 전체 보기' : '🆓 미피킹만';
             if (fb && fb.textContent !== ftxt) fb.textContent = ftxt;
         }
     }
