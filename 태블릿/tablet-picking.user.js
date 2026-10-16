@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [피킹] 태블릿 피킹 (タブレットピッキング)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.9.0
+// @version      1.11.0
 // @description  피킹리스트를 인쇄하지 않고 태블릿에서 바로 보면서 피킹. 출고건 선택 → 로케이션 순서로 합친 피킹 화면 → 탭/JAN 스캔으로 체크 → 완료 후 출고건별 仕分けリスト 인쇄.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
@@ -102,6 +102,17 @@
  *
  *  v1.9.0 (2026-10-16)
  *  - 배송대행 출고건 머리 오른쪽 위에 "📦 Tracking n개"를 크게 표시 (아래에 체크 진행 p / n)
+ *
+ *  v1.10.0 (2026-10-16) — 배송대행은 박스 수 기준
+ *  - 요청: "Tracking 수가 아니라 박스 수가 나와야 한다. 멀티박스는 2박스라서 확인이 어렵다"
+ *  - 입고 처리 목록(/admin/store/trackingno)에서 Tracking별 입고 기록(박스 1개 = 1줄)의 박스 수를 읽음
+ *    (그 출고번호가 메모에 붙은 줄만 셈. 못 읽으면 로케이션 개수로 대신 표시하고 ＊ 표시)
+ *  - Tracking 줄에 "n 박스", 체크도 박스마다 1개씩 (Tracking 라벨을 박스마다 스캔하거나 [전부])
+ *  - 오른쪽 위: "📦 박스 N개" (아래에 Tracking 개수·체크 진행)
+ *
+ *  v1.11.0 (2026-10-16)
+ *  - 박스 수를 입고 처리 목록에서 따로 읽지 않고, 포장 데이터의 로케이션 개수로 계산 (추가 조회 없음 → 빠름)
+ *    (실제 배송대행 28개 Tracking에서 로케이션 개수 = 입고 박스 수 일치 확인)
  * ============================================================
  */
 
@@ -377,13 +388,19 @@
                 trks.forEach(t => { if (!t.locs.length) t.locs.push({ name: '미지정', qty: 0 }); });
                 trks.sort((a, b) => locCompare(a.locs[0].name, b.locs[0].name) || a.tracking.localeCompare(b.tracking));
                 trks.forEach((t, i) => {
+                    // [v1.11.0] 박스 수 = 포장 데이터의 로케이션 개수 (입고 때 박스마다 로케이션이 하나씩 붙음)
+                    //  로케이션이 없으면(미입고 등) 1로 두고 ＊ 표시
+                    const realLocs = t.locs.filter(x => x.name && x.name !== '미지정');
+                    const boxes = Math.max(1, realLocs.length);
+                    const locs = t.locs;
+                    const ib = { boxes: realLocs.length };
                     lines.push({
                         key: 'O' + oi + 'T' + i, oi: oi, no: String(i + 1), isTrk: true,
-                        loc: t.locs[0].name, locs: t.locs,
+                        loc: locs[0].name, locs: locs, boxKnown: !!(ib && ib.boxes > 0),
                         jan: t.tracking, janN: normJan(t.tracking), janBase: normJan(t.tracking),
                         name: '', option: '', pcs: 0, isHalf: false, img: '',
-                        tracking: t.tracking, total: 1,
-                        alloc: [{ oi: oi, qty: 1, tracking: t.tracking }],
+                        tracking: t.tracking, total: boxes,
+                        alloc: [{ oi: oi, qty: boxes, tracking: t.tracking }],
                         isKuji: false, isMain: false, isSub: false, setDiv: 0
                     });
                 });
@@ -951,7 +968,7 @@
 
     // [v1.7.0] 배송대행은 Tracking(상자) 단위, 그 외는 상품 개수
     const isDelivery = (o) => String((o && o.type) || '').includes('delivery');
-    const unitOf = (o) => isDelivery(o) ? 'Tracking' : '개';
+    const unitOf = (o) => isDelivery(o) ? '박스' : '개';
     function orderStats(b, oi) {
         let t = 0, p = 0;
         b.lines.forEach(l => { if (l.oi !== oi) return; t += l.total; p += Math.min(b.picked[l.key] || 0, l.total); });
@@ -1025,12 +1042,13 @@
         const tags = (o.requests || []).map(x => `<span class="tag${/무검품/.test(x) ? ' red' : ''}">${esc(x)}</span>`).join('') +
             (o.isOcean ? '<span class="tag blue">해운(OCEAN)</span>' : '');
         let html = `<div class="obox${o.isOcean ? ' ocean' : ''}">
-            <div class="r1"><span class="on">${esc(o.outNum)}</span><span class="rv">${esc(o.receiver)}</span>${isDelivery(o) ? `<span class="op trkc">📦 Tracking <b>${os.t}</b>개<small>${os.done ? '✅ ' : ''}체크 ${os.p} / ${os.t}</small></span>` : `<span class="op">${os.done ? '✅ ' : ''}${os.p} / ${os.t} ${unitOf(o)}</span>`}</div>
+            <div class="r1"><span class="on">${esc(o.outNum)}</span><span class="rv">${esc(o.receiver)}</span>${isDelivery(o) ? `<span class="op trkc">📦 박스 <b>${os.t}</b>개<small>Tracking ${b.lines.filter(x => x.oi === oi && x.isTrk).length}개 · ${os.done ? '✅ ' : ''}체크 ${os.p} / ${os.t}</small></span>` : `<span class="op">${os.done ? '✅ ' : ''}${os.p} / ${os.t} ${unitOf(o)}</span>`}</div>
             ${tags ? `<div>${tags}</div>` : ''}
             ${o.requirementMsg ? `<div class="memo">${esc(o.requirementMsg)}</div>` : ''}
             ${kujiBannerHtml(kmap)}
         </div>`;
 
+        if (b.lines.some(l => l.oi === oi && l.isTrk && !l.boxKnown)) html += '<div class="kb warn" style="font-size:13px;margin:0 0 10px">＊ 로케이션이 없는 Tracking이 있습니다 (미입고?). 실물을 확인해 주세요.</div>';
         let shown = 0;
         b.lines.forEach(l => {
             if (l.oi !== oi) return;
@@ -1050,10 +1068,11 @@
                         <div class="tkl">Tracking</div>
                         <div class="tkn">${janHtml}</div>
                     </div></div>
+                    <div class="qty"><div class="q">${l.total}</div><div class="st">박스${l.boxKnown ? '' : ' ＊'}</div></div>
                     <div class="lcs">${l.locs.map(x => esc(x.name)).join('<br>')}</div>
                     <div class="cnt">
-                        <div class="num">${full ? '✓ ' : ''}${p}<small> / 1</small></div>
-                        <div class="btns">${full ? '<button class="mb" data-d="minus">취소</button>' : '<button class="mb all" data-d="all">체크</button>'}</div>
+                        <div class="num">${full ? '✓ ' : ''}${p}<small> / ${l.total}</small></div>
+                        <div class="btns"><button class="mb" data-d="minus">−1</button><button class="mb all" data-d="all">${l.total > 1 ? '전부' : '체크'}</button></div>
                     </div>
                 </div>`;
                 return;
@@ -1357,7 +1376,7 @@
                         <div class="on">${esc(o.outNum)}${o.isOcean ? ' <span class="oct">OCEAN</span>' : ''}</div>
                         <div class="rv">${esc(o.receiver)}</div>
                     </div>
-                    <div class="os">${got} / ${need} ${isDelivery(o) ? 'Tracking' : '개'}${need - got ? `<div class="kp">${isDelivery(o) ? '미확인' : '결품'} ${need - got}</div>` : ''}</div>
+                    <div class="os">${got} / ${need} ${isDelivery(o) ? '박스' : '개'}${need - got ? `<div class="kp">${isDelivery(o) ? '미확인' : '결품'} ${need - got}</div>` : ''}</div>
                 </div>
                 ${reqs ? `<div class="rqs">${reqs}</div>` : ''}
             </section>`;
@@ -1445,7 +1464,7 @@
             // [v1.6.0] 상품 정보는 인쇄하지 않음 (출고건 정보 + 결품 개수만)
             const reqs = (o.requests || []).map(x => `<span class="rq">${esc(x)}</span>`).join('') + (o.requirementMsg ? `<div>📝 ${esc(o.requirementMsg)}</div>` : '');
             return `<div class="ord">
-                <div class="oh"><div class="qr" id="qr${oi}"></div><div><div class="on">${esc(o.outNum)}</div><div class="rv">${esc(o.receiver)}${o.isOcean ? ' <b>[OCEAN]</b>' : ''}</div><div class="ct">${got}/${need}${isDelivery(o) ? ' Tracking' : '개'}${need - got ? ` <span class="kp">${isDelivery(o) ? '미확인' : '결품'}${need - got}</span>` : ''}</div></div></div>
+                <div class="oh"><div class="qr" id="qr${oi}"></div><div><div class="on">${esc(o.outNum)}</div><div class="rv">${esc(o.receiver)}${o.isOcean ? ' <b>[OCEAN]</b>' : ''}</div><div class="ct">${got}/${need}${isDelivery(o) ? '박스' : '개'}${need - got ? ` <span class="kp">${isDelivery(o) ? '미확인' : '결품'}${need - got}</span>` : ''}</div></div></div>
                 ${reqs ? `<div class="rqs">${reqs}</div>` : ''}
             </div>`;
         }).join('');
