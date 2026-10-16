@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.10.0
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정. v1.9.0: 속도 개선 - LH/OH 확인을 데이터 수집과 동시에 시작(수집 끝날 때까지 기다리지 않음), 동시 확인 3→4건(종합관리 검색 한도와 맞춤), 확인 중에도 인쇄 버튼을 누를 수 있게 변경(누르면 확인창), 걸린 시간을 콘솔에 기록. v1.9.1: 같은 상품이 따로 입고돼 같은 로케이션에 여러 건 있을 때 로케이션 개수가 1개로만 나오던 문제 수정(로케이션별 개수 합산, 예: Q19 : 2個). v1.10.0: 속도 개선 - 종합관리 조회는 무검품출하 출고건만 실행(중복 Tracking 경고만 인쇄). 일반 출고건의 같은 Tracking 묶음 표시는 제거(포장 화면 팝업에서 확인).
+// @version      1.13.0
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정. v1.9.0: 속도 개선 - LH/OH 확인을 데이터 수집과 동시에 시작(수집 끝날 때까지 기다리지 않음), 동시 확인 3→4건(종합관리 검색 한도와 맞춤), 확인 중에도 인쇄 버튼을 누를 수 있게 변경(누르면 확인창), 걸린 시간을 콘솔에 기록. v1.9.1: 같은 상품이 따로 입고돼 같은 로케이션에 여러 건 있을 때 로케이션 개수가 1개로만 나오던 문제 수정(로케이션별 개수 합산, 예: Q19 : 2個). v1.10.0: 속도 개선 - 종합관리 조회는 무검품출하 출고건만 실행(중복 Tracking 경고만 인쇄). 일반 출고건의 같은 Tracking 묶음 표시는 제거(포장 화면 팝업에서 확인). v1.11.0: 아타리쿠지 세트 기준 구글시트(아타리쿠지_세트기준) 연결 - 태블릿 피킹과 같은 시트, 등급 -A 같은 영문 등급도 인식. v1.12.0: 세트 개수 표시 수정 - 포장 화면처럼 옵션1/옵션2를 읽음(옵션1=JAN이라 세트 정보가 안 나오던 문제), 1봉지40개입·1BOX 4PCS·6pcs·상품명 nP SET 표시, 세트 개수 미기재 경고. v1.13.0: 배송대행은 상품 정보 없이 Tracking번호·로케이션만 인쇄(Tracking 단위 체크), 오른쪽 위에 Tracking 개수 표시.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -106,8 +106,10 @@
      *  - KUJI_SHEET_EDIT_URL: 시트를 평소에 여는 주소 (인쇄창 [시트에 등록] 버튼용)
      *  우선순위: 구글시트 > 위 KUJI_SETS > 각 PC 임시등록
      * ========================================================== */
-    const KUJI_SHEET_CSV_URL = '';
-    const KUJI_SHEET_EDIT_URL = '';
+    // [v1.11.0] 시트 연결: 구글 드라이브 '아타리쿠지_세트기준' (태블릿 피킹 스크립트와 같은 시트)
+    const KUJI_SHEET_ID = '1dEuXsgKJsdsM4FFHEgnuSE3droNVPQawF5z8hQgO59Q';
+    const KUJI_SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/' + KUJI_SHEET_ID + '/gviz/tq?tqx=out:csv&sheet=' + encodeURIComponent('세트기준');
+    const KUJI_SHEET_EDIT_URL = 'https://docs.google.com/spreadsheets/d/' + KUJI_SHEET_ID + '/edit';
 
     function parseCsv(text) {
         const rows = [];
@@ -134,14 +136,20 @@
         if (!KUJI_SHEET_CSV_URL) return { sets: {}, error: '' };
         try {
             const url = KUJI_SHEET_CSV_URL + (KUJI_SHEET_CSV_URL.includes('?') ? '&' : '?') + '_=' + Date.now();
-            const res = await fetch(url, { cache: 'no-store' });
+            // [v1.11.0] 시트가 늦게 응답해도 피킹리스트 인쇄가 멈추지 않게 8초 제한
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 8000);
+            const res = await fetch(url, { cache: 'no-store', signal: ctrl.signal }).finally(() => clearTimeout(timer));
             if (!res.ok) throw new Error('HTTP ' + res.status);
+            const text = await res.text();
+            // 공유 설정 때문에 로그인 화면(HTML)이 오면 실패로 처리
+            if (/^\s*</.test(text)) throw new Error('시트 공유 설정 확인 필요');
             const sets = {};
-            parseCsv(await res.text()).forEach(r => {
-                const jan = String(r[0] || '').replace(/\s/g, '');
-                const grade = String(r[1] || '').replace(/[-\s]/g, '');
+            parseCsv(text).forEach(r => {
+                const jan = String(r[0] || '').replace(/\s/g, '').replace(/\.0+$/, '');
+                const grade = String(r[1] || '').replace(/[-\s]/g, '').replace(/\.0+$/, '');
                 const per = parseInt(String(r[2] || '').replace(/[^\d]/g, ''), 10);
-                if (/^\d{8,14}$/.test(jan) && /^\d+$/.test(grade) && per > 0) {
+                if (/^\d{8,14}$/.test(jan) && /^[0-9A-Za-z]+$/.test(grade) && per > 0) {
                     sets[jan] = { grade: grade, perSet: per };
                 }
             });
@@ -278,8 +286,31 @@
         if (typeof v === 'object') return Object.values(v).map(optionToText).filter(Boolean).join(' / ');
         return String(v).replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
     }
+    /* [v1.12.0] 세트 정보: 회사 시스템 포장 화면과 같은 칸(옵션1 / 옵션2)을 읽음
+     *  - 옵션2에 세트 정보: "1봉지40개입", "1BOX 4PCS", "6pcs" …  (옵션1은 대부분 JAN이라 JAN과 같으면 생략)
+     *  - 예전엔 옵션1(JAN)을 옵션으로 읽어서 세트 정보가 안 나왔음
+     *  - 상품명 "5P SET": quantity=낱개 수, display_quantity=세트 수 */
+    const normCode = (x) => String(x || '').replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+    function packOptionText(it, jan) {
+        const o1 = optionToText(it.option1), o2 = optionToText(it.option2);
+        const same = (x) => normCode(x) === normCode(jan) || normCode(x) === normCode(String(jan).replace(/-H$/i, ''));
+        return [o1 && !same(o1) ? o1 : '', o2 && !same(o2) ? o2 : ''].filter(x => x && x !== '-' && x.toLowerCase() !== 'null').join(' / ');
+    }
+    function setInfoOf(it, option, qty) {
+        const info = { pcs: 0, unit: '', pset: 0, sets: 0 };
+        const m = String(option || '').match(/(\d+)\s*(봉지|봉|BOX|박스|카톤|ケース|箱|袋|세트|セット)\s*(\d+)\s*(개입|PCS|PC|入|個|개)/i);
+        if (m) { info.pcs = parseInt(m[3], 10); info.unit = m[2]; }
+        else { const m2 = String(option || '').match(/(\d+)\s*(PCS|PC|개입|個入|入|個|개)(?![a-z])/i); if (m2) info.pcs = parseInt(m2[1], 10); }
+        const m3 = String(it.display_title || it.title || '').match(/(\d+)\s*P\s*SET/i);
+        if (m3) {
+            info.pset = parseInt(m3[1], 10);
+            const dq = parseInt(it.display_quantity, 10);
+            info.sets = (dq > 0 && dq * info.pset === qty) ? dq : (qty % info.pset === 0 ? qty / info.pset : 0);
+        }
+        return info;
+    }
     function extractOption(it) {
-        const keys = ['option', 'option_name', 'options', 'item_option', 'option_str', 'option_text', 'option_value', 'opt', 'option1', 'variation', 'spec'];
+        const keys = ['option', 'option_name', 'options', 'item_option', 'option_str', 'option_text', 'option_value', 'opt', 'variation', 'spec'];
         for (const k of keys) {
             const t = optionToText(it[k]);
             if (t && t !== '-' && t.toLowerCase() !== 'null') return t;
@@ -732,7 +763,7 @@
                     let processedItems = items.map(it => {
                         let trackNo = String(it.tracking_no || it.invoice_id || it.tracking || it.invoice_no || it.delivery_tracking_no || "").trim();
                         const janCode = (it.jancode || it.jan_code || it.item_id || "-").trim();
-                        let option = extractOption(it);
+                        let option = ('option1' in it || 'option2' in it) ? packOptionText(it, janCode) : extractOption(it);
                         const isHalf = /-H$/i.test(janCode);
                         if (isHalf && !extractPcs(option)) {
                             const alt = findPcsByJan(jsonData, janCode);
@@ -748,6 +779,11 @@
                             pcs: extractPcs(option),
                             isHalf: isHalf,
                             qty: parseInt(it.quantity || it.display_quantity || it.qty || "1"),
+                            // [v1.12.0] 세트 정보
+                            setUnit: setInfoOf(it, option, parseInt(it.quantity || it.display_quantity || it.qty || "1")).unit,
+                            pset: setInfoOf(it, option, parseInt(it.quantity || it.display_quantity || it.qty || "1")).pset,
+                            sets: setInfoOf(it, option, parseInt(it.quantity || it.display_quantity || it.qty || "1")).sets,
+                            isSetName: /SET|セット|세트/i.test(String(it.title || '')),
                             location: extractLocationWithQty(it),
                             tracking: trackNo
                         };
@@ -761,6 +797,7 @@
                         if (combinedMap.has(key)) {
                             const existing = combinedMap.get(key);
                             existing.qty += item.qty;
+                            existing.sets = (existing.sets || 0) + (item.sets || 0);
                             // [v1.9.1] 같은 로케이션이면 문자열을 버리지 않고 로케이션별 개수를 더함
                             existing.location = mergeLocations(existing.location, existing.qty - item.qty, item.location, item.qty);
                         } else {
@@ -845,8 +882,30 @@
                         }
                     }
 
-                    for (let p = 0; p * ITEMS_PER_PAGE < processedItems.length; p++) {
+                    // [v1.13.0] 배송대행: 상품 정보 없이 Tracking(상자) 단위로만 인쇄 (Tracking이 없는 상품만 예외로 상품 줄)
+                    const isDeliveryTask = task.type.includes('delivery');
+                    let pageItems = processedItems;
+                    let trkCount = 0;
+                    if (isDeliveryTask) {
+                        const tm = new Map(), rest = [];
+                        processedItems.forEach(it => {
+                            if (!it.tracking) { rest.push(it); return; }
+                            if (!tm.has(it.tracking)) tm.set(it.tracking, { isTrk: true, tracking: it.tracking, productName: '', janCode: '', locNames: [] });
+                            const x = tm.get(it.tracking);
+                            String(it.location || '').split(/<br\s*\/?>/i)
+                                .map(t => t.replace(/\s*:\s*\d+\s*(個|개)\s*$/, '').trim())
+                                .filter(t => t && t !== '未指定')
+                                .forEach(n => { if (!x.locNames.includes(n)) x.locNames.push(n); });
+                        });
+                        const trks = Array.from(tm.values()).sort((a, b) =>
+                            String(a.locNames[0] || '').localeCompare(String(b.locNames[0] || ''), 'ja', { numeric: true }) || a.tracking.localeCompare(b.tracking));
+                        trkCount = trks.length;
+                        pageItems = trks.concat(rest);
+                    }
+
+                    for (let p = 0; p * ITEMS_PER_PAGE < pageItems.length; p++) {
                         collectedGroups.push({
+                            isDelivery: isDeliveryTask, trkCount: trkCount,
                             outNum: task.outNum, receiver: task.receiver, orderDate: task.orderDate,
                             requests: Array.from(reqSet),
                             requirementMsg: cleanMsg,
@@ -854,8 +913,8 @@
                             sameTracking: sameTracking,
                             noInsp: noInsp,
                             checkPending: checkPending,
-                            items: processedItems.slice(p * ITEMS_PER_PAGE, (p + 1) * ITEMS_PER_PAGE),
-                            pageNum: p + 1, totalPage: Math.ceil(processedItems.length / ITEMS_PER_PAGE),
+                            items: pageItems.slice(p * ITEMS_PER_PAGE, (p + 1) * ITEMS_PER_PAGE),
+                            pageNum: p + 1, totalPage: Math.ceil(pageItems.length / ITEMS_PER_PAGE),
                             originalIndex: task.originalIndex
                         });
                     }
@@ -1003,12 +1062,12 @@
                     allGroups.forEach(g => {
                         const o = byOut[g.outNum] = byOut[g.outNum] || { mains: new Set(), subs: {} };
                         g.items.forEach(it => {
-                            if (!it.productName.toUpperCase().includes("KUJI")) return;
+                            if (it.isTrk || !String(it.productName || "").toUpperCase().includes("KUJI")) return;
                             if (/S\\d+/i.test(it.janCode)) {
                                 o.mains.add(it.janCode.split(/S/i)[0].replace(/[- ]+$/, "").trim());
                                 return;
                             }
-                            const m = it.janCode.trim().match(/^(\\d{8,14})-(\\d+)$/);
+                            const m = it.janCode.trim().match(/^(\\d{8,14})\\s*-\\s*([0-9A-Za-z]+)$/);
                             if (!m) return;
                             const s = o.subs[m[1]] = o.subs[m[1]] || { name: it.productName, grades: {} };
                             s.grades[m[2]] = (s.grades[m[2]] || 0) + it.qty;
@@ -1183,6 +1242,7 @@
 
                     let existingMainJancodes = new Set();
                     g.items.forEach(it => {
+                        if (it.isTrk) return;
                         const isKuji = it.productName.toUpperCase().includes("KUJI");
                         const isSetMain = isKuji && /S\\d+/i.test(it.janCode);
                         if (isSetMain) {
@@ -1192,6 +1252,35 @@
                     });
 
                     g.items.forEach((it, i) => {
+                        // [v1.13.0] 배송대행 Tracking 줄 (상품 정보 없음)
+                        if (it.isTrk) {
+                            currentMainNo++;
+                            const tk = String(it.tracking);
+                            const tkHtml = tk.length > 4 ? tk.slice(0, -4) + '<b style="font-size:30px;">' + tk.slice(-4) + '</b>' : '<b style="font-size:30px;">' + tk + '</b>';
+                            const stCnt = sameTrackingCount(g, it.tracking);
+                            const niT = noInspOf(g, it.tracking);
+                            rows += '<tr style="height:52px;">' +
+                                '<td style="border:1.5px solid #000; text-align:center; font-weight:bold; font-size:14px;">' + currentMainNo + '</td>' +
+                                '<td style="border:1.5px solid #000; padding:2px 10px; font-size:20px; font-family:Consolas,monospace; letter-spacing:1px;">' + tkHtml +
+                                    (stCnt >= 2 ? ' <span style="font-size:11px; color:#fff; background:#7b1fa2; font-weight:900; border-radius:3px; padding:0 4px; font-family:sans-serif; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">🔗 同一Tracking ' + stCnt + '件</span>' : '') +
+                                    (niT ? ' <span style="font-size:11px; color:#fff; background:' + (niT.blocked ? '#c62828' : '#e65100') + '; font-weight:900; border-radius:3px; padding:0 4px; font-family:sans-serif; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">' + (niT.blocked ? '⛔ 無検品 ' + niT.noInspOrders.length + '件・進行不可' : '⚠ 無検品・重複') + '</span>' : '') +
+                                '</td>' +
+                                '<td style="border:1.5px solid #000; text-align:center; font-weight:900; font-size:18px; line-height:1.3;">' + (it.locNames.length ? it.locNames.join('<br>') : '未指定') + '</td>' +
+                                '<td style="border:1.5px solid #000; text-align:center; font-size:24px; color:#bbb;">□</td>' +
+                                '</tr>';
+                            return;
+                        }
+                        if (g.isDelivery) {
+                            // 배송대행인데 Tracking이 없는 상품 (예외)
+                            currentMainNo++;
+                            rows += '<tr style="height:45px;">' +
+                                '<td style="border:1.5px solid #000; text-align:center; font-weight:bold; font-size:12px;">' + currentMainNo + '</td>' +
+                                '<td style="border:1.5px solid #000; padding:2px 8px; font-size:12px;"><span style="color:#fff; background:#e69500; font-weight:900; padding:0 4px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">⚠ Trackingなし</span> ' + it.productName + ' / ' + it.janCode + ' × <b style="color:red; font-size:16px;">' + it.qty + '</b></td>' +
+                                '<td style="border:1.5px solid #000; text-align:center; font-weight:900; font-size:14px;">' + it.location + '</td>' +
+                                '<td style="border:1.5px solid #000; text-align:center; font-size:20px; color:#bbb;">□</td>' +
+                                '</tr>';
+                            return;
+                        }
                         let rowspan = 1;
                         let skip = false;
 
@@ -1244,7 +1333,7 @@
                                 it.productName = '<div style="display:flex; align-items:center; width:100%;"><span style="font-weight:bold; color:#ff3e1d; margin-right:5px; padding-left:5px;">└</span><span style="flex:1; text-align:center; padding-right:15px;">' + it.productName + '</span></div>';
                             } else {
                                 // [v1.1.0] 메인 잔코드가 없는 쿠지: 기준등급 행 수량칸에 (○set) 표시
-                                const sm = it.janCode.trim().match(/^(\\d{8,14})-(\\d+)$/);
+                                const sm = it.janCode.trim().match(/^(\\d{8,14})\\s*-\\s*([0-9A-Za-z]+)$/);
                                 const k = sm ? kujiMap[sm[1]] : null;
                                 if (k && (k.status === 'ok' || k.status === 'odd') && String(k.conf.grade) === sm[2]) {
                                     rowStyle = 'style="height:45px; background-color: #fff9c4 !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;"';
@@ -1258,13 +1347,19 @@
                         if (it.option) {
                             janHtml += '<div style="font-size:12px; color:#d00; font-weight:900; letter-spacing:0; margin-top:2px;">' + String(it.option).replace(/</g, '&lt;') + '</div>';
                         }
-                        if (it.pcs > 0 && (it.isHalf || !isKuji)) {
-                            rowStyle = 'style="height:45px; background-color: #e3f2fd !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;"';
-                            qtyTdHtml = '<td style="border:1.5px solid #000; text-align:center; vertical-align:middle; padding:2px 0;">' +
+                        const blueRow = 'style="height:45px; background-color: #e3f2fd !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;"';
+                        const qtyBox = (sub) => '<td style="border:1.5px solid #000; text-align:center; vertical-align:middle; padding:2px 0;">' +
                                 '<div style="font-size:26px; color:red; font-weight:900; line-height:1;">' + it.qty + '</div>' +
-                                '<div style="font-size:11px; color:#1565c0; font-weight:900; margin-top:1px;">×' + it.pcs + 'pcs</div>' +
-                                (it.qty > 1 ? '<div style="font-size:11px; color:#1565c0; font-weight:900;">=' + (it.qty * it.pcs) + '個</div>' : '') +
-                                '</td>';
+                                '<div style="font-size:10px; color:#1565c0; font-weight:900; margin-top:1px; line-height:1.15;">' + sub + '</div></td>';
+                        if (it.pset > 0 && !isKuji) {
+                            // [v1.12.0] 상품명 nP SET: 수량 = 낱개 수
+                            rowStyle = blueRow;
+                            qtyTdHtml = qtyBox(it.pset + 'P SET' + (it.sets ? '<br>×' + it.sets + 'セット' : ''));
+                        } else if (it.pcs > 0 && (it.isHalf || !isKuji)) {
+                            rowStyle = blueRow;
+                            qtyTdHtml = qtyBox((it.setUnit ? it.qty + it.setUnit + '×' : '×') + it.pcs + 'pcs' + '<br>=' + (it.qty * it.pcs) + '個');
+                        } else if (!isKuji && it.isSetName && !it.isHalf) {
+                            janHtml += '<div style="font-size:12px; color:#fff; background:#e69500; font-weight:900; letter-spacing:0; margin-top:2px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">⚠ セット個数 未記載</div>';
                         } else if (it.isHalf) {
                             janHtml += '<div style="font-size:12px; color:#fff; background:#e69500; font-weight:900; letter-spacing:0; margin-top:2px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">ハーフ · 個数は梱包画面のオプションを確認</div>';
                         }
@@ -1312,6 +1407,7 @@
                                             (g.pageNum === 1 && g.requirementMsg ? '<div style="margin-top:10px; font-size:14px; font-weight:bold; color:#d32f2f; white-space:pre-wrap; line-height:1.4; border-left:3px solid #d32f2f; padding-left:10px;">' + g.requirementMsg + '</div>' : '') +
                                         '</div>' +
                                         '<div style="text-align:right; display:flex; flex-direction:column; align-items:flex-end; gap:5px; min-width:200px;">' +
+                                            (g.isDelivery ? '<div style="font-size:26px; font-weight:900; color:#000; border:3px solid #000; padding:2px 12px; border-radius:6px; line-height:1.1;">📦 Tracking <span style="color:#d00; font-size:32px;">' + g.trkCount + '</span>個</div>' : '') +
                                             '<div style="font-size:16px; font-weight:bold; color:#ff3e1d;">[ '+g.pageNum+' / '+g.totalPage+' ]</div>' +
                                             '<div style="display:flex; align-items:stretch; gap:10px;">' +
                                                 '<div style="border:1px solid #000; width:125px; height:45px; display:flex; flex-direction:column;">' +
@@ -1330,9 +1426,12 @@
                                     kujiBannerHtml(kujiMap) +
                                     '<table style="width:100%; border-collapse:collapse; table-layout:fixed; border:2px solid #000;">' +
                                         '<thead style="background:#e8e8e8; font-size:13px; font-weight:bold;">' +
+                                            (g.isDelivery
+                                                ? '<tr style="height:35px;"><th width="40" style="border:1.5px solid #000;">No</th><th width="auto" style="border:1.5px solid #000;">Tracking番号</th><th width="170" style="border:1.5px solid #000;">ロケ</th><th width="45" style="border:1.5px solid #000;">V</th></tr>'
+                                                :
                                             '<tr style="height:35px;">' +
                                                 '<th width="35" style="border:1.5px solid #000;">No</th><th width="65" style="border:1.5px solid #000;">画像</th><th width="auto" style="border:1.5px solid #000;">商品名</th><th width="180" style="border:1.5px solid #000;">JANCODE</th><th width="50" style="border:1.5px solid #000;">数量</th><th width="140" style="border:1.5px solid #000;">ロケ / トラッキング</th><th width="35" style="border:1.5px solid #000;">V</th>' +
-                                            '</tr>' +
+                                            '</tr>') +
                                         '</thead>' +
                                         '<tbody>'+rows+'</tbody>' +
                                     '</table>' +
