@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [피킹] 태블릿 피킹 (タブレットピッキング)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.11.0
+// @version      1.12.0
 // @description  피킹리스트를 인쇄하지 않고 태블릿에서 바로 보면서 피킹. 출고건 선택 → 로케이션 순서로 합친 피킹 화면 → 탭/JAN 스캔으로 체크 → 완료 후 출고건별 仕分けリスト 인쇄.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
@@ -113,6 +113,13 @@
  *  v1.11.0 (2026-10-16)
  *  - 박스 수를 입고 처리 목록에서 따로 읽지 않고, 포장 데이터의 로케이션 개수로 계산 (추가 조회 없음 → 빠름)
  *    (실제 배송대행 28개 Tracking에서 로케이션 개수 = 입고 박스 수 일치 확인)
+ *
+ *  v1.12.0 (2026-10-19) — 2차 TEST 피드백: 이동하면서 잘 보이게
+ *  - 피드백: "이미지와 글자가 한쪽으로 치우쳐서 너무 작게 나온다"
+ *  - 원인: 카드 칸 폭이 작은 고정값이라 넓은 태블릿 화면에서 한쪽에 몰리고 작게 보였음
+ *  - 카드를 화면 폭 전체를 쓰는 격자로 변경, 이미지(약 190px)·로케이션(36px)·수량(70px)·JAN 끝 4자리(40px)·버튼 크게
+ *  - 입력칸 옆 [A−][A＋]로 글자·이미지 배율 조절 (70~160%, 태블릿마다 기억)
+ *  - 화면 폭이 좁으면(세로 등) 상품 정보 윗줄 / 수량·로케이션·체크 아랫줄로 자동 배치
  * ============================================================
  */
 
@@ -865,7 +872,65 @@
     #tmtp .card.trk .tkn b{font-size:34px;color:#0f172a}
     #tmtp .card.trk .lcs{width:200px;font-size:24px}
         @media (max-width:900px){#tmtp .lcs{width:110px;font-size:15px}#tmtp .qty{width:84px}#tmtp .qty .q{font-size:26px}#tmtp .card .no{width:44px;font-size:16px}#tmtp .obox .on{font-size:24px}}
-    `;
+    
+    /* ===== [v1.12.0] 큰 화면 레이아웃: 카드를 화면 폭 전체 격자로, 글자·이미지 크게 (A−/A+ 로 배율 조절: --z) ===== */
+    #tmtp{--z:1}
+    #tmtp .list{padding:calc(12px*var(--z)) calc(14px*var(--z)) 160px}
+    #tmtp .card{display:grid;align-items:stretch;min-height:calc(170px*var(--z));margin-bottom:calc(14px*var(--z));border-width:3px;border-radius:16px;
+        grid-template-columns:calc(66px*var(--z)) calc(190px*var(--z)) minmax(0,1fr) calc(160px*var(--z)) calc(230px*var(--z)) calc(200px*var(--z));
+        grid-template-areas:"no img info qty lcs cnt"}
+    #tmtp .card .body{display:contents}
+    #tmtp .card .no{grid-area:no;width:auto;font-size:calc(30px*var(--z))}
+    #tmtp .card .img{grid-area:img;width:auto;height:auto;margin:calc(10px*var(--z));border-radius:12px;align-self:center;aspect-ratio:1/1}
+    #tmtp .card .img img{width:100%;height:100%;object-fit:contain}
+    #tmtp .card .info{grid-area:info;padding:calc(12px*var(--z)) calc(14px*var(--z));display:flex;flex-direction:column;justify-content:center;gap:calc(6px*var(--z))}
+    #tmtp .card .nm{font-size:calc(24px*var(--z));line-height:1.25;-webkit-line-clamp:3}
+    #tmtp .card .jan{font-size:calc(20px*var(--z));margin-top:0}
+    #tmtp .card .jan b{font-size:calc(40px*var(--z));letter-spacing:1px}
+    #tmtp .card .opt{font-size:calc(22px*var(--z));padding:2px 10px;border-width:2px;align-self:flex-start}
+    #tmtp .card .qty{grid-area:qty;width:auto;border-left:2px solid #e2e8f0}
+    #tmtp .card .qty .q{font-size:calc(70px*var(--z))}
+    #tmtp .card .qty .st{font-size:calc(22px*var(--z))}
+    #tmtp .card .qty .pc{font-size:calc(19px*var(--z));line-height:1.25}
+    #tmtp .card .qty .warn{font-size:calc(17px*var(--z));padding:3px 6px}
+    #tmtp .card .lcs{grid-area:lcs;width:auto;font-size:calc(36px*var(--z));line-height:1.2;border-left:2px solid #e2e8f0;background:#f8fafc;padding:calc(8px*var(--z))}
+    #tmtp .card .lcs .tk{font-size:calc(18px*var(--z))}
+    #tmtp .card .cnt{grid-area:cnt;width:auto;border-left:3px dashed #cbd5e1;gap:calc(10px*var(--z))}
+    #tmtp .card .num{font-size:calc(56px*var(--z))}
+    #tmtp .card .num small{font-size:calc(30px*var(--z))}
+    #tmtp .card .mb{min-width:calc(78px*var(--z));min-height:calc(62px*var(--z));font-size:calc(22px*var(--z));border-radius:12px}
+    /* 배송대행 Tracking 줄 (이미지 없음) */
+    #tmtp .card.trk{grid-template-columns:calc(66px*var(--z)) minmax(0,1fr) calc(160px*var(--z)) calc(230px*var(--z)) calc(200px*var(--z));grid-template-areas:"no info qty lcs cnt"}
+    #tmtp .card.trk .tkl{font-size:calc(18px*var(--z))}
+    #tmtp .card.trk .tkn{font-size:calc(28px*var(--z))}
+    #tmtp .card.trk .tkn b{font-size:calc(52px*var(--z))}
+    #tmtp .card.trk .lcs{width:auto;font-size:calc(40px*var(--z))}
+    /* 출고건 머리·탭·버튼 */
+    #tmtp .obox{padding:calc(12px*var(--z)) calc(18px*var(--z));margin-bottom:calc(14px*var(--z))}
+    #tmtp .obox .on{font-size:calc(42px*var(--z))}
+    #tmtp .obox .rv{font-size:calc(22px*var(--z))}
+    #tmtp .obox .op{font-size:calc(26px*var(--z))}
+    #tmtp .obox .op.trkc{font-size:calc(28px*var(--z))}
+    #tmtp .obox .op.trkc b{font-size:calc(52px*var(--z))}
+    #tmtp .obox .op.trkc small{font-size:calc(16px*var(--z))}
+    #tmtp .tag{font-size:calc(20px*var(--z));padding:3px 10px}
+    #tmtp .memo{font-size:calc(22px*var(--z))}
+    #tmtp .kb{font-size:calc(19px*var(--z))}
+    #tmtp .kb .big{font-size:calc(32px*var(--z))}
+    #tmtp .oc{font-size:calc(20px*var(--z));min-height:calc(56px*var(--z));padding:6px 16px}
+    #tmtp .oc small{font-size:calc(14px*var(--z))}
+    #tmtp .tabs .nv{min-width:calc(64px*var(--z));min-height:calc(56px*var(--z));font-size:calc(26px*var(--z))}
+    #tmtp .sub input{font-size:calc(20px*var(--z));min-height:calc(52px*var(--z))}
+    #tmtp .sub .zb{border:2px solid #0f172a;background:#fff;border-radius:10px;min-width:56px;min-height:46px;font-size:18px;font-weight:900}
+    #tmtp .empty{font-size:calc(30px*var(--z))}
+    /* 세로 화면 등 폭이 좁을 때: 상품 정보를 윗줄, 수량·로케이션·체크를 아랫줄로 */
+    @media (max-width:1100px){
+        #tmtp .card{grid-template-columns:calc(56px*var(--z)) calc(150px*var(--z)) minmax(0,1fr) minmax(0,1.2fr) minmax(0,1fr);
+            grid-template-areas:"no img info info info" "no img qty lcs cnt"}
+        #tmtp .card .qty,#tmtp .card .lcs,#tmtp .card .cnt{border-top:2px solid #e2e8f0}
+        #tmtp .card.trk{grid-template-columns:calc(56px*var(--z)) minmax(0,1fr) minmax(0,1.2fr) minmax(0,1fr);grid-template-areas:"no info info info" "no qty lcs cnt"}
+    }
+`;
 
     let PK = null; // 현재 열린 피킹 화면 상태
 
@@ -889,6 +954,8 @@
             <div class="tabs"></div>
             <div class="sub">
                 <input type="text" inputmode="numeric" placeholder="JAN · Tracking 스캔 / 직접 입력 → Enter" autocomplete="off">
+                <button class="zb" data-zoom="-1" title="글자 작게">A−</button>
+                <button class="zb" data-zoom="1" title="글자 크게">A＋</button>
                 <button class="sb on" data-flt="todo">미완료</button>
                 <button class="sb" data-flt="all">전체</button>
             </div>
@@ -897,6 +964,12 @@
         document.documentElement.style.overflow = 'hidden';
 
         PK = { batch: batch, root: root, filter: 'todo', keyBuf: '', keyAt: 0, oi: firstOpenOrder(batch, 0) };
+        // [v1.12.0] 글자·이미지 배율 (태블릿마다 기억)
+        let z0 = 1;
+        // 저장된 배율이 없으면 화면 폭에 맞춰 시작 (넓은 화면일수록 크게)
+        z0 = window.innerWidth >= 1700 ? 1.3 : (window.innerWidth >= 1400 ? 1.15 : 1);
+        try { const sv = parseFloat(localStorage.getItem(ZOOM_KEY)); if (sv) z0 = sv; } catch (e) {}
+        setZoom(z0, true);
         const input = root.querySelector('.sub input');
 
         root.addEventListener('click', (e) => {
@@ -909,6 +982,8 @@
                 else if (a === 'cancel') onCancelBatch();
                 return;
             }
+            const zb = e.target.closest('[data-zoom]');
+            if (zb) { setZoom(PK.zoom + parseInt(zb.dataset.zoom, 10) * 0.1); return; }
             const flt = e.target.closest('[data-flt]');
             if (flt) { PK.filter = flt.dataset.flt; render(); return; }
             const oc = e.target.closest('[data-oi]');
@@ -956,6 +1031,13 @@
         refreshKujiSheet(false);
     }
 
+    const ZOOM_KEY = 'tmTabletPicking.zoom';
+    function setZoom(z, silent) {
+        z = Math.round(Math.min(1.6, Math.max(0.7, z)) * 10) / 10;
+        if (PK) { PK.zoom = z; PK.root.style.setProperty('--z', String(z)); }
+        try { localStorage.setItem(ZOOM_KEY, String(z)); } catch (e) {}
+        if (PK && !silent) toastMsg('글자 크기 ' + Math.round(z * 100) + '%', true);
+    }
     function closePicker(silent) {
         const r = document.getElementById('tmtp');
         if (r) r.remove();
