@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [피킹] 태블릿 피킹 (タブレットピッキング)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.12.0
+// @version      1.13.0
 // @description  피킹리스트를 인쇄하지 않고 태블릿에서 바로 보면서 피킹. 출고건 선택 → 로케이션 순서로 합친 피킹 화면 → 탭/JAN 스캔으로 체크 → 완료 후 출고건별 仕分けリスト 인쇄.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
@@ -120,6 +120,11 @@
  *  - 카드를 화면 폭 전체를 쓰는 격자로 변경, 이미지(약 190px)·로케이션(36px)·수량(70px)·JAN 끝 4자리(40px)·버튼 크게
  *  - 입력칸 옆 [A−][A＋]로 글자·이미지 배율 조절 (70~160%, 태블릿마다 기억)
  *  - 화면 폭이 좁으면(세로 등) 상품 정보 윗줄 / 수량·로케이션·체크 아랫줄로 자동 배치
+ *
+ *  v1.13.0 (2026-10-20) — 3차 TEST 피드백: 전체 목록 한눈에 보기
+ *  - 위쪽 [📋 전체 목록] 버튼 → 종이 피킹리스트처럼 모든 출고건·상품을 한 화면에 표시
+ *  - 피킹 끝난 줄은 ✓ 체크 + 회색, 일부만 한 줄은 노란색(◐), 남은 줄은 □
+ *  - [전체] / [남은 것만] 전환, 줄을 누르면 그 상품 카드로, 출고건 제목을 누르면 그 출고건으로 이동
  * ============================================================
  */
 
@@ -930,6 +935,47 @@
         #tmtp .card .qty,#tmtp .card .lcs,#tmtp .card .cnt{border-top:2px solid #e2e8f0}
         #tmtp .card.trk{grid-template-columns:calc(56px*var(--z)) minmax(0,1fr) minmax(0,1.2fr) minmax(0,1fr);grid-template-areas:"no info info info" "no qty lcs cnt"}
     }
+    /* ===== [v1.13.0] 전체 목록 (종이 피킹리스트처럼) ===== */
+    #tmtp-all{position:fixed;inset:0;z-index:2147483600;background:rgba(15,23,42,.55);display:flex;justify-content:center;align-items:stretch;padding:calc(10px*var(--z))}
+    #tmtp-all .pan{background:#fff;border-radius:14px;width:100%;max-width:1500px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 10px 40px rgba(0,0,0,.4)}
+    #tmtp-all .ah{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:calc(10px*var(--z)) 14px;background:#1e293b;color:#fff}
+    #tmtp-all .ah .t{font-size:calc(22px*var(--z));font-weight:900}
+    #tmtp-all .ah .s{font-size:calc(16px*var(--z));flex:1;min-width:180px}
+    #tmtp-all .ah button{border:0;border-radius:10px;padding:calc(10px*var(--z)) calc(16px*var(--z));font-size:calc(17px*var(--z));font-weight:800;background:#475569;color:#fff;cursor:pointer}
+    #tmtp-all .ah button.on{background:#0ea5e9}
+    #tmtp-all .ah button.x{background:#dc2626}
+    #tmtp-all .ab{overflow:auto;-webkit-overflow-scrolling:touch;padding:calc(10px*var(--z)) 12px 40px}
+    #tmtp-all .os{margin-bottom:calc(14px*var(--z));border:2px solid #cbd5e1;border-radius:12px;overflow:hidden}
+    #tmtp-all .os.cur{border-color:#0ea5e9;box-shadow:0 0 0 3px rgba(14,165,233,.25)}
+    #tmtp-all .oh{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:calc(8px*var(--z)) 12px;background:#f1f5f9;cursor:pointer}
+    #tmtp-all .os.done .oh{background:#dcfce7}
+    #tmtp-all .oh .n{font-size:calc(22px*var(--z));font-weight:900;font-family:Consolas,monospace}
+    #tmtp-all .oh .r{font-size:calc(17px*var(--z));font-weight:700;color:#334155}
+    #tmtp-all .oh .p{margin-left:auto;font-size:calc(19px*var(--z));font-weight:900}
+    #tmtp-all .oh .go{font-size:calc(14px*var(--z));color:#0369a1;font-weight:800}
+    #tmtp-all table{width:100%;border-collapse:collapse;table-layout:fixed}
+    #tmtp-all th{background:#e2e8f0;font-size:calc(14px*var(--z));padding:4px 6px;text-align:left;color:#334155}
+    #tmtp-all td{border-top:1px solid #e2e8f0;padding:calc(7px*var(--z)) 6px;font-size:calc(17px*var(--z));vertical-align:middle;word-break:normal;overflow-wrap:anywhere}
+    #tmtp-all tr.ln{cursor:pointer}
+    #tmtp-all tr.ln:active td{background:#e0f2fe}
+    #tmtp-all td.ck{text-align:center;font-size:calc(28px*var(--z));font-weight:900;color:#94a3b8}
+    #tmtp-all tr.full td{background:#f8fafc;color:#94a3b8}
+    #tmtp-all tr.full td.ck{color:#16a34a}
+    #tmtp-all tr.full .nm{text-decoration:line-through}
+    #tmtp-all tr.part td{background:#fef9c3}
+    #tmtp-all tr.part td.ck{color:#ca8a04}
+    #tmtp-all td.no{text-align:center;font-weight:800}
+    #tmtp-all .nm{font-weight:700}
+    #tmtp-all .jn{font-family:Consolas,monospace;color:#475569;font-size:calc(15px*var(--z))}
+    #tmtp-all .jn b{font-size:calc(21px*var(--z));color:#0f172a}
+    #tmtp-all tr.full .jn b{color:#94a3b8}
+    #tmtp-all .op2{display:inline-block;margin-top:2px;padding:0 6px;border-radius:6px;background:#ede9fe;color:#5b21b6;font-size:calc(13px*var(--z));font-weight:700}
+    #tmtp-all td.q{text-align:center;font-size:calc(24px*var(--z));font-weight:900}
+    #tmtp-all td.q small{display:block;font-size:calc(13px*var(--z));font-weight:700;color:#7c3aed;line-height:1.25}
+    #tmtp-all td.q small.w{color:#dc2626}
+    #tmtp-all td.lc{font-weight:800;font-size:calc(18px*var(--z))}
+    #tmtp-all td.pk{text-align:center;font-weight:900;font-size:calc(20px*var(--z))}
+    #tmtp-all .emp{text-align:center;padding:40px;font-size:calc(22px*var(--z));font-weight:800;color:#16a34a}
 `;
 
     let PK = null; // 현재 열린 피킹 화면 상태
@@ -946,6 +992,7 @@
             <div class="hd">
                 <div class="ttl">📱 피킹</div>
                 <div class="prog"><div class="ptxt"></div><div class="bar"><i></i></div></div>
+                <button class="hb" data-act="all" style="background:#1d4ed8">📋 전체 목록</button>
                 <button class="hb" data-act="cam">📷 카메라</button>
                 <button class="hb" data-act="pause">⏸ 중단</button>
                 <button class="hb" data-act="cancel" style="background:#7f1d1d">✖ 취소</button>
@@ -979,6 +1026,7 @@
                 if (a === 'pause') closePicker();
                 else if (a === 'finish') onFinish();
                 else if (a === 'cam') openCamera();
+                else if (a === 'all') openAllList();
                 else if (a === 'cancel') onCancelBatch();
                 return;
             }
@@ -1212,8 +1260,111 @@
             const el = list.querySelector(`.card[data-key="${cssEsc(flashKey)}"]`);
             if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
         }
+        renderAllList();
     }
     function cssEsc(s) { return String(s).replace(/[^A-Za-z0-9_-]/g, ''); }
+
+    // ===== [v1.13.0] 전체 목록: 종이 피킹리스트처럼 모든 출고건·상품을 한 화면에 =====
+    function setTextOf(l, kmap) {
+        // 수량 아래 작은 글씨 (세트 정보) — 피킹 카드와 같은 기준
+        if (l.isTrk) return `<small>박스${l.boxKnown ? '' : ' ＊ 로케이션 없음'}</small>`;
+        const t = [];
+        if (l.isMain && l.setDiv > 0) t.push(Math.floor(l.total / l.setDiv) + ' set');
+        else if (l.isKuji && !l.isMain && !l.isSub) {
+            const m = String(l.jan).trim().match(/^(\d{8,14})\s*-\s*([0-9A-Za-z]+)$/);
+            const k = m ? kmap[m[1]] : null;
+            if (k && (k.status === 'ok' || k.status === 'odd') && String(k.conf.grade) === m[2]) t.push(fmtSets(k.sets) + ' set');
+        }
+        let warn = false;
+        if (l.pset > 0 && !l.isKuji) t.push(l.pset + 'P SET' + (l.sets ? ' × ' + l.sets + '세트' : ''));
+        else if (l.pcs > 0 && (l.isHalf || !l.isKuji)) t.push(l.total + (l.unit || '세트') + ' × ' + l.pcs + '개입 = ' + (l.total * l.pcs) + '개');
+        else if (l.isHalf || (l.isSetName && !l.isKuji)) { t.push('⚠ 세트 개수 미기재'); warn = true; }
+        return t.length ? `<small${warn ? ' class="w"' : ''}>${t.map(esc).join('<br>')}</small>` : '';
+    }
+    function openAllList() {
+        if (!PK) return;
+        let ov = document.getElementById('tmtp-all');
+        if (!ov) {
+            ov = document.createElement('div');
+            ov.id = 'tmtp-all';
+            ov.innerHTML = `<div class="pan">
+                <div class="ah"><span class="t">📋 전체 목록</span><span class="s"></span>
+                    <button data-af="all">전체</button><button data-af="todo">남은 것만</button>
+                    <button class="x" data-aclose="1">✖ 닫기</button></div>
+                <div class="ab"></div></div>`;
+            ov.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (e.target === ov || e.target.closest('[data-aclose]')) { closeAllList(); return; }
+                const f = e.target.closest('[data-af]');
+                if (f) { PK.allFilter = f.dataset.af; renderAllList(); return; }
+                const ln = e.target.closest('[data-lkey]');
+                if (ln) {
+                    const l = PK.batch.lines.find(x => x.key === ln.dataset.lkey);
+                    closeAllList();
+                    if (l) { PK.oi = l.oi; render(l.key); }
+                    return;
+                }
+                const oh = e.target.closest('[data-aoi]');
+                if (oh) { PK.oi = parseInt(oh.dataset.aoi, 10) || 0; closeAllList(); render(); PK.root.querySelector('.list').scrollTop = 0; }
+            });
+            PK.root.appendChild(ov);
+        }
+        if (!PK.allFilter) PK.allFilter = 'all';
+        renderAllList();
+        const cur = ov.querySelector('.os.cur');
+        if (cur) cur.scrollIntoView({ block: 'start' });
+    }
+    function closeAllList() {
+        const ov = document.getElementById('tmtp-all');
+        if (ov) ov.remove();
+    }
+    function renderAllList() {
+        const ov = document.getElementById('tmtp-all');
+        if (!ov || !PK) return;
+        const b = PK.batch;
+        const st = batchStats(b);
+        const doneN = b.orders.filter((o, i) => orderStats(b, i).done).length;
+        ov.querySelector('.s').innerHTML = `출고 <b>${doneN}</b> / ${b.orders.length}건 완료　·　피킹 <b>${st.picked}</b> / ${st.total}`;
+        ov.querySelectorAll('[data-af]').forEach(x => x.classList.toggle('on', x.dataset.af === PK.allFilter));
+        let html = '';
+        b.orders.forEach((o, oi) => {
+            const os = orderStats(b, oi);
+            if (PK.allFilter === 'todo' && os.done) return;
+            const kmap = kujiInfoFor(b, oi);
+            const del = isDelivery(o);
+            let rows = '';
+            b.lines.forEach(l => {
+                if (l.oi !== oi) return;
+                const p = Math.min(b.picked[l.key] || 0, l.total);
+                const full = p >= l.total;
+                if (PK.allFilter === 'todo' && full) return;
+                const jan = String(l.jan);
+                const janHtml = jan.length > 4 ? `${esc(jan.slice(0, -4))}<b>${esc(jan.slice(-4))}</b>` : `<b>${esc(jan)}</b>`;
+                const locTxt = l.isTrk ? l.locs.map(x => esc(x.name)).join('<br>')
+                    : l.locs.map(x => esc(x.name) + (l.locs.length > 1 ? ' : ' + x.qty : '')).join('<br>');
+                const nameCell = l.isTrk
+                    ? `<div class="jn">${janHtml}</div>`
+                    : `<div class="nm">${l.isSub ? '└ ' : ''}${esc(l.name)}</div><div class="jn">${janHtml}</div>${l.option ? `<span class="op2">${esc(l.option)}</span>` : ''}`;
+                rows += `<tr class="ln${full ? ' full' : (p > 0 ? ' part' : '')}" data-lkey="${esc(l.key)}">
+                    <td class="ck">${full ? '✓' : (p > 0 ? '◐' : '□')}</td><td class="no">${esc(l.no)}</td><td>${nameCell}</td>
+                    <td class="q">${l.total}${setTextOf(l, kmap)}</td>
+                    <td class="lc">${locTxt || '-'}</td><td class="pk">${p} / ${l.total}</td></tr>`;
+            });
+            const muk = (o.requests || []).filter(x => /무검품/.test(x)).map(x => `<span class="tag red">${esc(x)}</span>`).join('');
+            html += `<div class="os${oi === PK.oi ? ' cur' : ''}${os.done ? ' done' : ''}">
+                <div class="oh" data-aoi="${oi}"><span class="n">${os.done ? '✅ ' : ''}${esc(o.outNum)}</span><span class="r">${esc(o.receiver || '')}</span>${muk}
+                    <span class="p">${os.p} / ${os.t} ${unitOf(o)}</span><span class="go">이 출고건으로 ▶</span></div>
+                <table><colgroup><col style="width:calc(54px*var(--z))"><col style="width:calc(56px*var(--z))"><col><col style="width:calc(160px*var(--z))"><col style="width:calc(170px*var(--z))"><col style="width:calc(100px*var(--z))"></colgroup>
+                <thead><tr><th>체크</th><th>No</th><th>${del ? 'Tracking' : '상품명 / JAN'}</th><th>${del ? '박스' : '수량'}</th><th>로케이션</th><th>피킹</th></tr></thead>
+                <tbody>${rows}</tbody></table></div>`;
+        });
+        if (!html) html = '<div class="emp">🎉 남은 피킹이 없습니다</div>';
+        const ab = ov.querySelector('.ab');
+        const top = ab.scrollTop;
+        ab.innerHTML = html;
+        ab.scrollTop = top;
+    }
+
 
     // 한 줄에 +1 하고, 출고건이 다 끝나면 다음 출고건으로 넘어감
     function afterPick(l) {
