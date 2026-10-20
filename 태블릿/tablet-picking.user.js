@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [피킹] 태블릿 피킹 (タブレットピッキング)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.13.0
+// @version      1.14.0
 // @description  피킹리스트를 인쇄하지 않고 태블릿에서 바로 보면서 피킹. 출고건 선택 → 로케이션 순서로 합친 피킹 화면 → 탭/JAN 스캔으로 체크 → 완료 후 출고건별 仕分けリスト 인쇄.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
@@ -125,6 +125,11 @@
  *  - 위쪽 [📋 전체 목록] 버튼 → 종이 피킹리스트처럼 모든 출고건·상품을 한 화면에 표시
  *  - 피킹 끝난 줄은 ✓ 체크 + 회색, 일부만 한 줄은 노란색(◐), 남은 줄은 □
  *  - [전체] / [남은 것만] 전환, 줄을 누르면 그 상품 카드로, 출고건 제목을 누르면 그 출고건으로 이동
+ *
+ *  v1.14.0 (2026-10-20) — 전체 목록에서 바로 체크
+ *  - 전체 목록 왼쪽 □ 버튼을 누르면 1개씩 체크 (크고 한 개씩 집는 상품용)
+ *  - 다 체크된 ✓ 를 누르면 「1개 빼기 / 전부 해제」 선택
+ *  - 줄의 나머지 부분을 누르면 지금처럼 그 상품 카드로 이동
  * ============================================================
  */
 
@@ -936,7 +941,7 @@
         #tmtp .card.trk{grid-template-columns:calc(56px*var(--z)) minmax(0,1fr) minmax(0,1.2fr) minmax(0,1fr);grid-template-areas:"no info info info" "no qty lcs cnt"}
     }
     /* ===== [v1.13.0] 전체 목록 (종이 피킹리스트처럼) ===== */
-    #tmtp-all{position:fixed;inset:0;z-index:2147483600;background:rgba(15,23,42,.55);display:flex;justify-content:center;align-items:stretch;padding:calc(10px*var(--z))}
+    #tmtp-all{position:fixed;inset:0;z-index:100000;background:rgba(15,23,42,.55);display:flex;justify-content:center;align-items:stretch;padding:calc(10px*var(--z))}
     #tmtp-all .pan{background:#fff;border-radius:14px;width:100%;max-width:1500px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 10px 40px rgba(0,0,0,.4)}
     #tmtp-all .ah{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:calc(10px*var(--z)) 14px;background:#1e293b;color:#fff}
     #tmtp-all .ah .t{font-size:calc(22px*var(--z));font-weight:900}
@@ -975,6 +980,13 @@
     #tmtp-all td.q small.w{color:#dc2626}
     #tmtp-all td.lc{font-weight:800;font-size:calc(18px*var(--z))}
     #tmtp-all td.pk{text-align:center;font-weight:900;font-size:calc(20px*var(--z))}
+    #tmtp-all td.ck{padding:4px}
+    #tmtp-all .ckb{width:calc(62px*var(--z));height:calc(62px*var(--z));border:3px solid #64748b;border-radius:12px;background:#fff;color:#64748b;font-size:calc(30px*var(--z));font-weight:900;line-height:1;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;margin:0 auto;padding:0}
+    #tmtp-all .ckb small{font-size:calc(12px*var(--z));font-weight:800}
+    #tmtp-all .ckb:active{transform:scale(.93)}
+    #tmtp-all tr.part .ckb{border-color:#ca8a04;color:#a16207;background:#fef08a}
+    #tmtp-all tr.full .ckb{border-color:#16a34a;background:#16a34a;color:#fff}
+    #tmtp-all .hint{font-size:calc(13px*var(--z));color:#cbd5e1;width:100%}
     #tmtp-all .emp{text-align:center;padding:40px;font-size:calc(22px*var(--z));font-weight:800;color:#16a34a}
 `;
 
@@ -1290,13 +1302,16 @@
             ov.innerHTML = `<div class="pan">
                 <div class="ah"><span class="t">📋 전체 목록</span><span class="s"></span>
                     <button data-af="all">전체</button><button data-af="todo">남은 것만</button>
-                    <button class="x" data-aclose="1">✖ 닫기</button></div>
+                    <button class="x" data-aclose="1">✖ 닫기</button>
+                    <span class="hint">왼쪽 □ 를 누르면 1개씩 체크 · 줄을 누르면 그 상품 화면으로 이동</span></div>
                 <div class="ab"></div></div>`;
             ov.addEventListener('click', (e) => {
                 e.stopPropagation();
                 if (e.target === ov || e.target.closest('[data-aclose]')) { closeAllList(); return; }
                 const f = e.target.closest('[data-af]');
                 if (f) { PK.allFilter = f.dataset.af; renderAllList(); return; }
+                const ck = e.target.closest('[data-ck]');
+                if (ck) { allListCheck(ck.dataset.ck); return; }
                 const ln = e.target.closest('[data-lkey]');
                 if (ln) {
                     const l = PK.batch.lines.find(x => x.key === ln.dataset.lkey);
@@ -1313,6 +1328,26 @@
         renderAllList();
         const cur = ov.querySelector('.os.cur');
         if (cur) cur.scrollIntoView({ block: 'start' });
+    }
+    // [v1.14.0] 전체 목록에서 바로 체크: □ → +1 / ✓ → 빼기·해제 선택
+    function allListCheck(key) {
+        if (!PK) return;
+        const b = PK.batch;
+        const l = b.lines.find(x => x.key === key);
+        if (!l) return;
+        const p = Math.min(b.picked[key] || 0, l.total);
+        if (p < l.total) {
+            beep(true);
+            toastMsg(`No.${esc(l.no)}　${p + 1} / ${l.total}`, true);
+            addPick(key, +1);
+            return;
+        }
+        const nm = l.isTrk ? 'Tracking …' + esc(String(l.jan).slice(-6)) : esc(l.name);
+        modal(`<b>No.${esc(l.no)}</b> ${nm}<br>이미 다 체크되어 있습니다 (${p} / ${l.total}).`, [
+            ...(l.total > 1 ? [{ label: '1개 빼기', color: '#ca8a04', fn: () => addPick(key, -1) }] : []),
+            { label: '체크 전부 해제', color: '#dc2626', fn: () => { b.picked[key] = 0; saveBatch(b); render(); } },
+            { label: '닫기', color: '#6b7280' }
+        ]);
     }
     function closeAllList() {
         const ov = document.getElementById('tmtp-all');
@@ -1346,7 +1381,7 @@
                     ? `<div class="jn">${janHtml}</div>`
                     : `<div class="nm">${l.isSub ? '└ ' : ''}${esc(l.name)}</div><div class="jn">${janHtml}</div>${l.option ? `<span class="op2">${esc(l.option)}</span>` : ''}`;
                 rows += `<tr class="ln${full ? ' full' : (p > 0 ? ' part' : '')}" data-lkey="${esc(l.key)}">
-                    <td class="ck">${full ? '✓' : (p > 0 ? '◐' : '□')}</td><td class="no">${esc(l.no)}</td><td>${nameCell}</td>
+                    <td class="ck"><button type="button" class="ckb" data-ck="${esc(l.key)}">${full ? '✓' : (p > 0 ? `${p}<small>/${l.total}</small>` : '□')}${!full && l.total > 1 && p === 0 ? '<small>+1</small>' : ''}</button></td><td class="no">${esc(l.no)}</td><td>${nameCell}</td>
                     <td class="q">${l.total}${setTextOf(l, kmap)}</td>
                     <td class="lc">${locTxt || '-'}</td><td class="pk">${p} / ${l.total}</td></tr>`;
             });
@@ -1354,7 +1389,7 @@
             html += `<div class="os${oi === PK.oi ? ' cur' : ''}${os.done ? ' done' : ''}">
                 <div class="oh" data-aoi="${oi}"><span class="n">${os.done ? '✅ ' : ''}${esc(o.outNum)}</span><span class="r">${esc(o.receiver || '')}</span>${muk}
                     <span class="p">${os.p} / ${os.t} ${unitOf(o)}</span><span class="go">이 출고건으로 ▶</span></div>
-                <table><colgroup><col style="width:calc(54px*var(--z))"><col style="width:calc(56px*var(--z))"><col><col style="width:calc(160px*var(--z))"><col style="width:calc(170px*var(--z))"><col style="width:calc(100px*var(--z))"></colgroup>
+                <table><colgroup><col style="width:calc(76px*var(--z))"><col style="width:calc(56px*var(--z))"><col><col style="width:calc(160px*var(--z))"><col style="width:calc(170px*var(--z))"><col style="width:calc(100px*var(--z))"></colgroup>
                 <thead><tr><th>체크</th><th>No</th><th>${del ? 'Tracking' : '상품명 / JAN'}</th><th>${del ? '박스' : '수량'}</th><th>로케이션</th><th>피킹</th></tr></thead>
                 <tbody>${rows}</tbody></table></div>`;
         });
