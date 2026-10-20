@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.16.0
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정. v1.9.0: 속도 개선 - LH/OH 확인을 데이터 수집과 동시에 시작(수집 끝날 때까지 기다리지 않음), 동시 확인 3→4건(종합관리 검색 한도와 맞춤), 확인 중에도 인쇄 버튼을 누를 수 있게 변경(누르면 확인창), 걸린 시간을 콘솔에 기록. v1.9.1: 같은 상품이 따로 입고돼 같은 로케이션에 여러 건 있을 때 로케이션 개수가 1개로만 나오던 문제 수정(로케이션별 개수 합산, 예: Q19 : 2個). v1.10.0: 속도 개선 - 종합관리 조회는 무검품출하 출고건만 실행(중복 Tracking 경고만 인쇄). 일반 출고건의 같은 Tracking 묶음 표시는 제거(포장 화면 팝업에서 확인). v1.11.0: 아타리쿠지 세트 기준 구글시트(아타리쿠지_세트기준) 연결 - 태블릿 피킹과 같은 시트, 등급 -A 같은 영문 등급도 인식. v1.12.0: 세트 개수 표시 수정 - 포장 화면처럼 옵션1/옵션2를 읽음(옵션1=JAN이라 세트 정보가 안 나오던 문제), 1봉지40개입·1BOX 4PCS·6pcs·상품명 nP SET 표시, 세트 개수 미기재 경고. v1.13.0: 배송대행은 상품 정보 없이 Tracking번호·로케이션만 인쇄(Tracking 단위 체크), 오른쪽 위에 Tracking 개수 표시. v1.14.0: 배송대행 박스 수 표시 - 입고 처리 목록의 박스 수(그 출고번호 줄)를 Tracking별로 표시하고 오른쪽 위에 총 박스 수(아래 Tracking 건수), 박스 수만큼 체크칸. v1.15.0: 박스 수를 입고 처리 목록 조회 대신 로케이션 개수로 계산(추가 조회 없음, 실제 28개 Tracking에서 일치 확인). v1.16.0: 캡슐토이 세트는 파란색 표시 안 함(다른 세트상품만), 수량칸 아래 '×○pcs=○個' 표시 제거(잔코드 아래 옵션으로 확인).
+// @version      1.16.1
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정. v1.9.0: 속도 개선 - LH/OH 확인을 데이터 수집과 동시에 시작(수집 끝날 때까지 기다리지 않음), 동시 확인 3→4건(종합관리 검색 한도와 맞춤), 확인 중에도 인쇄 버튼을 누를 수 있게 변경(누르면 확인창), 걸린 시간을 콘솔에 기록. v1.9.1: 같은 상품이 따로 입고돼 같은 로케이션에 여러 건 있을 때 로케이션 개수가 1개로만 나오던 문제 수정(로케이션별 개수 합산, 예: Q19 : 2個). v1.10.0: 속도 개선 - 종합관리 조회는 무검품출하 출고건만 실행(중복 Tracking 경고만 인쇄). 일반 출고건의 같은 Tracking 묶음 표시는 제거(포장 화면 팝업에서 확인). v1.11.0: 아타리쿠지 세트 기준 구글시트(아타리쿠지_세트기준) 연결 - 태블릿 피킹과 같은 시트, 등급 -A 같은 영문 등급도 인식. v1.12.0: 세트 개수 표시 수정 - 포장 화면처럼 옵션1/옵션2를 읽음(옵션1=JAN이라 세트 정보가 안 나오던 문제), 1봉지40개입·1BOX 4PCS·6pcs·상품명 nP SET 표시, 세트 개수 미기재 경고. v1.13.0: 배송대행은 상품 정보 없이 Tracking번호·로케이션만 인쇄(Tracking 단위 체크), 오른쪽 위에 Tracking 개수 표시. v1.14.0: 배송대행 박스 수 표시 - 입고 처리 목록의 박스 수(그 출고번호 줄)를 Tracking별로 표시하고 오른쪽 위에 총 박스 수(아래 Tracking 건수), 박스 수만큼 체크칸. v1.15.0: 박스 수를 입고 처리 목록 조회 대신 로케이션 개수로 계산(추가 조회 없음, 실제 28개 Tracking에서 일치 확인). v1.16.0: 캡슐토이 세트는 파란색 표시 안 함(다른 세트상품만), 수량칸 아래 '×○pcs=○個' 표시 제거(잔코드 아래 옵션으로 확인). v1.16.1: -H(하프)는 수량칸 아래 '×○pcs=○個' 계속 표시, 잔코드 아래 옵션의 한국어 단위를 일본어로(1봉지30개입→1袋30個入).
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -1150,6 +1150,8 @@
 
                 /* ---------- [v1.4.0] 같은 Tracking 묶음 출고건 표시 ---------- */
                 const PRINTED_OUTS = new Set(groups.map(g => String(g.outNum).trim()));
+                // [v1.16.1] 옵션의 한국어 단위를 일본어로 (1봉지30개입 → 1袋30個入)
+                function toJaOption(t) { return String(t || '').replace(/개입/g, '個入').replace(/봉지/g, '袋').replace(/박스/g, '箱').replace(/카톤/g, 'カートン').replace(/세트/g, 'セット').replace(/개/g, '個'); }
                 function escHtml(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
                 function sameTrackingHtml(g) {
@@ -1352,7 +1354,7 @@
                         // [v1.3.0] 옵션 PCS 세트상품 (-H 등)
                         let janHtml = it.janCode;
                         if (it.option) {
-                            janHtml += '<div style="font-size:12px; color:#d00; font-weight:900; letter-spacing:0; margin-top:2px;">' + String(it.option).replace(/</g, '&lt;') + '</div>';
+                            janHtml += '<div style="font-size:12px; color:#d00; font-weight:900; letter-spacing:0; margin-top:2px;">' + toJaOption(String(it.option)).replace(/</g, '&lt;') + '</div>';
                         }
                         // [v1.16.0] 캡슐토이 판별(상품명)
                         const isCapsule = /CAPSULE|カプセル|캡슐|ガチャ|GACHA/i.test(String(it.productName || ''));
@@ -1368,6 +1370,8 @@
                             // [v1.16.0] 수량 밑 "1봉지×30pcs=30個" 표시 제거(잔코드 밑 옵션에 이미 있음)
                             //           캡슐토이는 세트상품이어도 색칠하지 않음
                             if (!isCapsule) rowStyle = blueRow;
+                            // [v1.16.1] -H(ハーフ)은 실제 낱개 수 계산값을 일본어로 표시
+                            if (it.isHalf) qtyTdHtml = qtyBox('×' + it.pcs + 'pcs<br>=' + (it.qty * it.pcs) + '個');
                         } else if (!isKuji && it.isSetName && !it.isHalf) {
                             janHtml += '<div style="font-size:12px; color:#fff; background:#e69500; font-weight:900; letter-spacing:0; margin-top:2px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">⚠ セット個数 未記載</div>';
                         } else if (it.isHalf) {
