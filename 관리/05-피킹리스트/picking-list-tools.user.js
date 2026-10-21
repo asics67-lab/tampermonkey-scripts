@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.16.1
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정. v1.9.0: 속도 개선 - LH/OH 확인을 데이터 수집과 동시에 시작(수집 끝날 때까지 기다리지 않음), 동시 확인 3→4건(종합관리 검색 한도와 맞춤), 확인 중에도 인쇄 버튼을 누를 수 있게 변경(누르면 확인창), 걸린 시간을 콘솔에 기록. v1.9.1: 같은 상품이 따로 입고돼 같은 로케이션에 여러 건 있을 때 로케이션 개수가 1개로만 나오던 문제 수정(로케이션별 개수 합산, 예: Q19 : 2個). v1.10.0: 속도 개선 - 종합관리 조회는 무검품출하 출고건만 실행(중복 Tracking 경고만 인쇄). 일반 출고건의 같은 Tracking 묶음 표시는 제거(포장 화면 팝업에서 확인). v1.11.0: 아타리쿠지 세트 기준 구글시트(아타리쿠지_세트기준) 연결 - 태블릿 피킹과 같은 시트, 등급 -A 같은 영문 등급도 인식. v1.12.0: 세트 개수 표시 수정 - 포장 화면처럼 옵션1/옵션2를 읽음(옵션1=JAN이라 세트 정보가 안 나오던 문제), 1봉지40개입·1BOX 4PCS·6pcs·상품명 nP SET 표시, 세트 개수 미기재 경고. v1.13.0: 배송대행은 상품 정보 없이 Tracking번호·로케이션만 인쇄(Tracking 단위 체크), 오른쪽 위에 Tracking 개수 표시. v1.14.0: 배송대행 박스 수 표시 - 입고 처리 목록의 박스 수(그 출고번호 줄)를 Tracking별로 표시하고 오른쪽 위에 총 박스 수(아래 Tracking 건수), 박스 수만큼 체크칸. v1.15.0: 박스 수를 입고 처리 목록 조회 대신 로케이션 개수로 계산(추가 조회 없음, 실제 28개 Tracking에서 일치 확인). v1.16.0: 캡슐토이 세트는 파란색 표시 안 함(다른 세트상품만), 수량칸 아래 '×○pcs=○個' 표시 제거(잔코드 아래 옵션으로 확인). v1.16.1: -H(하프)는 수량칸 아래 '×○pcs=○個' 계속 표시, 잔코드 아래 옵션의 한국어 단위를 일본어로(1봉지30개입→1袋30個入).
+// @version      1.17.0
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정. v1.9.0: 속도 개선 - LH/OH 확인을 데이터 수집과 동시에 시작(수집 끝날 때까지 기다리지 않음), 동시 확인 3→4건(종합관리 검색 한도와 맞춤), 확인 중에도 인쇄 버튼을 누를 수 있게 변경(누르면 확인창), 걸린 시간을 콘솔에 기록. v1.9.1: 같은 상품이 따로 입고돼 같은 로케이션에 여러 건 있을 때 로케이션 개수가 1개로만 나오던 문제 수정(로케이션별 개수 합산, 예: Q19 : 2個). v1.10.0: 속도 개선 - 종합관리 조회는 무검품출하 출고건만 실행(중복 Tracking 경고만 인쇄). 일반 출고건의 같은 Tracking 묶음 표시는 제거(포장 화면 팝업에서 확인). v1.11.0: 아타리쿠지 세트 기준 구글시트(아타리쿠지_세트기준) 연결 - 태블릿 피킹과 같은 시트, 등급 -A 같은 영문 등급도 인식. v1.12.0: 세트 개수 표시 수정 - 포장 화면처럼 옵션1/옵션2를 읽음(옵션1=JAN이라 세트 정보가 안 나오던 문제), 1봉지40개입·1BOX 4PCS·6pcs·상품명 nP SET 표시, 세트 개수 미기재 경고. v1.13.0: 배송대행은 상품 정보 없이 Tracking번호·로케이션만 인쇄(Tracking 단위 체크), 오른쪽 위에 Tracking 개수 표시. v1.14.0: 배송대행 박스 수 표시 - 입고 처리 목록의 박스 수(그 출고번호 줄)를 Tracking별로 표시하고 오른쪽 위에 총 박스 수(아래 Tracking 건수), 박스 수만큼 체크칸. v1.15.0: 박스 수를 입고 처리 목록 조회 대신 로케이션 개수로 계산(추가 조회 없음, 실제 28개 Tracking에서 일치 확인). v1.16.0: 캡슐토이 세트는 파란색 표시 안 함(다른 세트상품만), 수량칸 아래 '×○pcs=○個' 표시 제거(잔코드 아래 옵션으로 확인). v1.16.1: -H(하프)는 수량칸 아래 '×○pcs=○個' 계속 표시, 잔코드 아래 옵션의 한국어 단위를 일본어로(1봉지30개입→1袋30個入). v1.17.0: 입고 담당자가 등록한 1세트 낱개수(구글시트 '세트낱개수' 탭)로 수량칸에 세트 수를 크게 표시(16個→1セット), 세트 배수가 아니면 ⚠端数 표시.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -68,6 +68,15 @@
  *    두 스크립트가 같은 id의 "🔥 통합 초광속 수집" 버튼을 만듦. 옛 쪽이 먼저 실행되면 이 스크립트는
  *    버튼을 만들지 않아서, 출고건을 하나씩 순서대로 읽고 종합관리 검색까지 기다리는 느린 옛 방식으로 인쇄됨.
  *  - 수정: 이 스크립트가 만든 버튼이 아니면 지우고 이 스크립트의 버튼으로 교체. (관리/03 쪽도 1.2.0에서 옛 블록 중지)
+ *
+ *  v1.17.0 (요청: "겉면 8종류인데 실제 16개 든 세트상품을 2세트로 착각해서 출고한다")
+ *  - 입고 화면(입고/02-jancode-shortcuts v1.5.0)에서 입고 담당자가 "1세트 낱개수"를 등록하면
+ *    구글시트(아타리쿠지_세트기준 파일)의 '세트낱개수' 탭에 저장됨.
+ *  - 피킹리스트는 그 탭을 읽어서, 등록된 상품의 수량칸을 "1 / セット / (16個)" 처럼 세트 수를 크게 표시하고
+ *    JANCODE 칸 아래에 "🧩 1セット16個入 : 16個 = 1セット" 를 붙임. 줄은 파란색.
+ *  - 출고수량이 세트 배수가 아니면 "⚠端数○個", 1세트보다 적으면 "⚠1セット未満" 빨간 표시.
+ *  - -H(ハーフ)는 출고수량이 세트 수이므로 낱개 = 수량 × 낱개수 로 계산.
+ *  - 시트를 못 읽으면 인쇄창 왼쪽 위에 빨간 안내(인쇄되지 않음). 쿠지(KUJI) 상품은 기존 쿠지 세트 계산을 그대로 씀.
  *
  *  v1.10.0 (요청: "무검품이 되어 있을 때만 종합관리에서 중복 Tracking 조회")
  *  - 피킹리스트가 느린 가장 큰 원인은 LH/OH 건마다 Tracking별로 하던 종합관리 검색(1건 1~2초).
@@ -158,6 +167,51 @@
             console.error('[쿠지 세트시트] 읽기 실패', e);
             return { sets: {}, error: String(e.message || e) };
         }
+    }
+
+    /* ==========================================================
+     * [v1.17.0] 세트상품 1세트 낱개수 (입고 담당자가 입고 화면에서 등록)
+     *  - 같은 파일(아타리쿠지_세트기준)의 '세트낱개수' 탭: A 잔코드 | B 1세트 낱개수 | C 상품명 …
+     *  - 출고수량(낱개) ÷ 1세트 낱개수 = 세트 수 를 수량칸에 크게 표시
+     * ========================================================== */
+    const SETPCS_TAB = '세트낱개수';
+    const SETPCS_CSV_URL = 'https://docs.google.com/spreadsheets/d/' + KUJI_SHEET_ID + '/gviz/tq?tqx=out:csv&headers=1&sheet=' + encodeURIComponent(SETPCS_TAB);
+    const setPcsKey = (j) => String(j || '').replace(/\s+/g, '').toUpperCase();
+    async function loadSetPcsSheet() {
+        try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 8000);
+            const res = await fetch(SETPCS_CSV_URL + '&_=' + Date.now(), { cache: 'no-store', signal: ctrl.signal }).finally(() => clearTimeout(timer));
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const text = await res.text();
+            if (/^\s*</.test(text)) throw new Error('시트 공유 설정 확인 필요');
+            const rows = parseCsv(text);
+            // 탭이 없으면 구글이 첫 번째 탭(쿠지 세트기준)을 대신 돌려줌 → 머리글로 확인
+            if (!rows.length || !/낱개/.test(rows[0].join(','))) return { map: {}, error: '' };
+            const map = {};
+            rows.slice(1).forEach(r => {
+                const jan = setPcsKey(r[0]).replace(/\.0+$/, '');
+                const pcs = parseInt(String(r[1] || '').replace(/[^\d]/g, ''), 10);
+                if (jan && pcs > 1) map[jan] = pcs;
+            });
+            return { map: map, error: '' };
+        } catch (e) {
+            console.error('[세트낱개수 시트] 읽기 실패', e);
+            return { map: {}, error: String(e.message || e) };
+        }
+    }
+    // 피킹리스트 데이터에 1세트 낱개수를 붙여 둠 (인쇄창에서 계산·표시)
+    function annotateSetPcs(groups, map) {
+        let n = 0;
+        groups.forEach(g => {
+            if (g.isDelivery) return;
+            (g.items || []).forEach(it => {
+                if (!it || it.isTrk || !it.janCode) return;
+                const pcs = map[setPcsKey(it.janCode)];
+                if (pcs > 1) { it.setPcs = pcs; n++; }
+            });
+        });
+        return n;
     }
 
     function injectCustomButton() {
@@ -712,6 +766,8 @@
         const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
         // [v1.7.0] 쿠지 세트시트는 처음부터 같이 읽어 둠(마지막에 기다리지 않도록)
         const kujiSheetPromise = loadKujiSheet();
+        // [v1.17.0] 세트 낱개수 시트도 처음부터 같이 읽어 둠
+        const setPcsPromise = loadSetPcsSheet();
         const boxList = Array.from(checkedBoxes);
         let doneCount = 0;
         showOverlay(`🚀 데이터를 수집하여 이중 정렬 가공 중... (0 / ${boxList.length})`);
@@ -938,6 +994,9 @@
             });
 
             const kujiSheet = await kujiSheetPromise;
+            const setPcsSheet = await setPcsPromise;
+            annotateSetPcs(collectedGroups, setPcsSheet.map);
+            kujiSheet.setPcsError = setPcsSheet.error;
             const printWin = openPrintWindow(collectedGroups, kujiSheet, checkTasks.length);
             document.getElementById('harvest-overlay')?.remove();
             if (printWin && checkTasks.length > 0) runDeferredChecks(printWin, checkTasks);
@@ -1013,7 +1072,7 @@
         const toSafe = (obj) => JSON.stringify(obj).replace(/[\u007F-￿]/g, chr => "\\u" + ("0000" + chr.charCodeAt(0).toString(16)).substr(-4));
         const safeData = toSafe(groups);
         const safeKuji = toSafe(Object.assign({}, KUJI_SETS, kujiSheet.sets));
-        const safeSheetInfo = toSafe({ editUrl: KUJI_SHEET_EDIT_URL, error: kujiSheet.error });
+        const safeSheetInfo = toSafe({ editUrl: KUJI_SHEET_EDIT_URL, error: kujiSheet.error, setPcsError: kujiSheet.setPcsError || '' });
 
         const style = `<style>
             @page { size: A4; margin: 0; }
@@ -1049,6 +1108,9 @@
                 const KUJI_SETS_BASE = ${safeKuji};
                 const KUJI_LOCAL_KEY = 'kujiSetsLocal';
                 const KUJI_SHEET_INFO = ${safeSheetInfo};
+                if (KUJI_SHEET_INFO.setPcsError) {
+                    document.body.insertAdjacentHTML('afterbegin', '<div class="no-print" style="position:fixed; top:44px; left:10px; z-index:1000; background:#c62828; color:#fff; padding:6px 12px; border-radius:4px; font-weight:bold;">⚠ セット個数シートを読み込めませんでした (' + KUJI_SHEET_INFO.setPcsError + ') - セット数が表示されません</div>');
+                }
                 if (KUJI_SHEET_INFO.error) {
                     document.body.insertAdjacentHTML('afterbegin', '<div class="no-print" style="position:fixed; top:10px; left:10px; z-index:1000; background:#e69500; color:#fff; padding:6px 12px; border-radius:4px; font-weight:bold;">⚠ くじセット基準シートを読み込めませんでした (' + KUJI_SHEET_INFO.error + ') - コードに登録された基準のみ使用中</div>');
                 }
@@ -1151,6 +1213,26 @@
                 /* ---------- [v1.4.0] 같은 Tracking 묶음 출고건 표시 ---------- */
                 const PRINTED_OUTS = new Set(groups.map(g => String(g.outNum).trim()));
                 // [v1.16.1] 옵션의 한국어 단위를 일본어로 (1봉지30개입 → 1袋30個入)
+                /* [v1.17.0] 세트 낱개수 표시: 출고수량(낱개) ÷ 1세트 낱개수 = 세트 수
+                 *  -H(ハーフ)는 출고수량 자체가 세트 수 → 낱개 = 수량 × 낱개수 */
+                function setPcsInfo(it) {
+                    const pcs = it.setPcs, q = it.qty;
+                    const half = /-H$/i.test(String(it.janCode || ''));
+                    let sets, pieces, rem = 0;
+                    if (half) { sets = q; pieces = q * pcs; }
+                    else { sets = Math.floor(q / pcs); pieces = q; rem = q % pcs; }
+                    let warn = '';
+                    if (!half && sets === 0) warn = '1セット未満';
+                    else if (rem) warn = '端数' + rem + '個';
+                    const line = pieces + '個 = ' + sets + 'セット' + (rem ? ' + ' + rem + '個' : '');
+                    const td = '<td style="border:1.5px solid #000; text-align:center; vertical-align:middle; padding:2px 0;">' +
+                        '<div style="font-size:26px; color:red; font-weight:900; line-height:1;">' + sets + '</div>' +
+                        '<div style="font-size:12px; color:red; font-weight:900; line-height:1.1;">セット</div>' +
+                        '<div style="font-size:10px; color:#1565c0; font-weight:900; margin-top:1px; line-height:1.1;">(' + pieces + '個)</div>' +
+                        (warn ? '<div style="font-size:10px; color:#fff; background:#c62828; font-weight:900; margin-top:1px; line-height:1.15; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">⚠' + warn + '</div>' : '') +
+                        '</td>';
+                    return { line: line, td: td };
+                }
                 function toJaOption(t) { return String(t || '').replace(/개입/g, '個入').replace(/봉지/g, '袋').replace(/박스/g, '箱').replace(/카톤/g, 'カートン').replace(/세트/g, 'セット').replace(/개/g, '個'); }
                 function escHtml(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
@@ -1362,7 +1444,13 @@
                         const qtyBox = (sub) => '<td style="border:1.5px solid #000; text-align:center; vertical-align:middle; padding:2px 0;">' +
                                 '<div style="font-size:26px; color:red; font-weight:900; line-height:1;">' + it.qty + '</div>' +
                                 '<div style="font-size:10px; color:#1565c0; font-weight:900; margin-top:1px; line-height:1.15;">' + sub + '</div></td>';
-                        if (it.pset > 0 && !isKuji) {
+                        if (it.setPcs > 0 && !isKuji) {
+                            // [v1.17.0] 입고 때 등록한 1세트 낱개수 → 수량칸에 세트 수를 크게, 낱개 수는 작게
+                            rowStyle = blueRow;
+                            const sp = setPcsInfo(it);
+                            janHtml += '<div style="font-size:12px; color:#fff; background:#1565c0; font-weight:900; letter-spacing:0; margin-top:2px; border-radius:3px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">🧩 1セット' + it.setPcs + '個入 : ' + sp.line + '</div>';
+                            qtyTdHtml = sp.td;
+                        } else if (it.pset > 0 && !isKuji) {
                             // [v1.12.0] 상품명 nP SET: 수량 = 낱개 수
                             rowStyle = blueRow;
                             qtyTdHtml = qtyBox(it.pset + 'P SET' + (it.sets ? '<br>×' + it.sets + 'セット' : ''));
