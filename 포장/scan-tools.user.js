@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.8.5
-// @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
+// @version      1.9.0
+// @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7. v1.9.0: 세트상품 세트 수 표시(입고 때 등록한 1세트 낱개수 기준)
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
 // @match        https://platform.co.jp/*
@@ -203,6 +203,13 @@
  *    않고, 사이트 원래 검색이 고른 카테고리 그대로 실행됩니다.
  *  - 바코드 스캐너 입력(아주 빠름)이라도 카테고리를 직접 바꿔 둔 경우에는 그 카테고리를
  *    유지합니다. 카테고리를 건드리지 않았을 때만 기존처럼 출고번호로 맞춰 검색합니다.
+ *
+ *  v1.9.0 추가 기능 (요청: "겉면 8종류인데 실제 16개 든 세트상품을 2세트로 착각해서 출고한다")
+ *  - [블록 5](신규) 입고 담당자가 입고 화면에서 등록한 "1세트 낱개수"(구글시트 '세트낱개수' 탭)를 읽어서
+ *    포장 모달 수량칸에 파란 테두리 + "= 1セット (1セット16個入)" 를 표시합니다.
+ *    세트 배수가 아니면 빨간색 "+4個 ⚠". 모달 맨 위에 "🧩 セット商品 n件 — 数量は「個数」です" 배너.
+ *  - 표시는 CSS로만 그려서 수량 숫자·상품명·JAN 칸 글자는 그대로 → 합산·스캔 수·과다스캔 판정에 영향 없음.
+ *  - -H(ハーフ)는 출고수량 자체가 세트 수이므로 "2セット (×20 = 40個)" 처럼 표시.
  *
  *  v1.8.5 버그 수정 (보고: "OS152423946 멀티박스 13박스 87.7kg인데 '박스 1개당 87.7kg 너무 무겁다'고 나온다")
  *  - [블록 2] 원인: 박스 수를 box_cnt1~5 입력칸에서만 읽어서, 멀티박스(박스별 사이즈 목록 箱1~箱13)
@@ -2199,4 +2206,187 @@
     } else {
         document.addEventListener('DOMContentLoaded', initSummaryTool);
     }
+})();
+/* ------------------------------------------------------------
+ * [블록 5] v1.9.0 — 세트상품 세트 수 표시 (포장 모달)
+ *  - 입고 담당자가 입고 화면에서 등록한 "1세트 낱개수"(구글시트 '세트낱개수' 탭)를 읽어서
+ *    포장 모달 수량칸 아래에 "16個 = 1セット" 를 크게 표시하고, 모달 위에 세트상품 안내 배너를 띄움.
+ *  - 표시는 CSS(::after)로만 그려서 수량 글자·상품명·JAN 칸 내용은 바꾸지 않음
+ *    → 블록 2의 합산(병합)·스캔 수 계산·과다스캔 판정에 영향 없음.
+ * ------------------------------------------------------------ */
+(function setPcsPackingBlock() {
+    'use strict';
+    if (!/\/admin\/shipping\/packing/.test(location.pathname)) return;
+
+    const SETPCS_SHEET_ID = '1dEuXsgKJsdsM4FFHEgnuSE3droNVPQawF5z8hQgO59Q'; // 아타리쿠지_세트기준 파일
+    const SETPCS_TAB = '세트낱개수';
+    const SETPCS_CSV_URL = 'https://docs.google.com/spreadsheets/d/' + SETPCS_SHEET_ID +
+        '/gviz/tq?tqx=out:csv&headers=1&sheet=' + encodeURIComponent(SETPCS_TAB);
+    const CACHE_KEY = 'tmSetPcsCache';
+    const setPcsKey = (j) => String(j || '').replace(/\s+/g, '').toUpperCase();
+
+    function parseCsv(text) {
+        const rows = []; let row = [], cur = '', q = false;
+        for (let i = 0; i < text.length; i++) {
+            const c = text[i];
+            if (q) {
+                if (c === '"' && text[i + 1] === '"') { cur += '"'; i++; }
+                else if (c === '"') q = false;
+                else cur += c;
+            } else if (c === '"') q = true;
+            else if (c === ',') { row.push(cur); cur = ''; }
+            else if (c === '\n' || c === '\r') {
+                if (c === '\r' && text[i + 1] === '\n') i++;
+                row.push(cur); rows.push(row); row = []; cur = '';
+            } else cur += c;
+        }
+        if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+        return rows;
+    }
+
+    // 페이지가 자주 새로고침되므로 마지막으로 읽은 표를 잠깐 기억해 두고(즉시 표시), 뒤에서 새로 읽음
+    let map = {};
+    let loadedAt = 0, loadErr = '', loading = null;
+    try {
+        const c = JSON.parse(sessionStorage.getItem(CACHE_KEY) || 'null');
+        if (c && c.map) { map = c.map; loadedAt = c.at || 0; }
+    } catch (_) {}
+
+    function refresh(force) {
+        if (loading) return loading;
+        if (!force && loadedAt && Date.now() - loadedAt < 3 * 60 * 1000) return Promise.resolve();
+        loading = (async () => {
+            try {
+                const ctrl = new AbortController();
+                const t = setTimeout(() => ctrl.abort(), 8000);
+                const res = await fetch(SETPCS_CSV_URL + '&_=' + Date.now(), { cache: 'no-store', signal: ctrl.signal })
+                    .finally(() => clearTimeout(t));
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const text = await res.text();
+                if (/^\s*</.test(text)) throw new Error('シート共有設定を確認');
+                const rows = parseCsv(text);
+                const m = {};
+                // 탭이 없으면 구글이 첫 번째 탭을 대신 돌려줌 → 머리글로 확인
+                if (rows.length && /낱개/.test(rows[0].join(','))) {
+                    rows.slice(1).forEach(r => {
+                        const jan = setPcsKey(r[0]).replace(/\.0+$/, '');
+                        const pcs = parseInt(String(r[1] || '').replace(/[^\d]/g, ''), 10);
+                        if (jan && pcs > 1) m[jan] = pcs;
+                    });
+                }
+                map = m; loadedAt = Date.now(); loadErr = '';
+                try { sessionStorage.setItem(CACHE_KEY, JSON.stringify({ map: map, at: loadedAt })); } catch (_) {}
+            } catch (e) {
+                loadErr = String(e.message || e);
+                console.warn('[세트낱개수] 시트 읽기 실패', e);
+            } finally {
+                loading = null;
+                render();
+            }
+        })();
+        return loading;
+    }
+
+    GM_addStyle(`
+        #packingItemsTbody td.tm-setpcs-cell { box-shadow: inset 0 0 0 3px #1565c0 !important; }
+        #packingItemsTbody td.tm-setpcs-cell::after {
+            content: attr(data-tm-setpcs); display: block; white-space: pre-line;
+            margin: 3px auto 0; padding: 2px 5px; border-radius: 5px; max-width: 150px;
+            background: #1565c0; color: #fff; font-size: 13px; font-weight: 900; line-height: 1.25;
+        }
+        #packingItemsTbody td.tm-setpcs-cell.tm-setpcs-warn { box-shadow: inset 0 0 0 3px #c62828 !important; }
+        #packingItemsTbody td.tm-setpcs-cell.tm-setpcs-warn::after { background: #c62828; }
+        #tm-setpcs-banner { border: 3px solid #1565c0; background: #e3f2fd; border-radius: 8px;
+            padding: 6px 10px; margin: 0 0 8px 0; color: #0d2a4d; font-size: 13px; }
+        #tm-setpcs-banner.warn { border-color: #c62828; background: #ffebee; }
+        #tm-setpcs-banner .t { font-weight: 900; font-size: 15px; }
+        #tm-setpcs-banner .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+        #tm-setpcs-banner .chip { background: #fff; border: 1.5px solid #1565c0; border-radius: 4px; padding: 1px 6px; font-weight: 800; }
+        #tm-setpcs-banner .chip.bad { border-color: #c62828; color: #c62828; }
+        #tm-setpcs-banner .chip b { font-size: 15px; color: #c62828; }
+    `);
+
+    const isMergedChild = (row) => row.dataset && row.dataset.tmMerged === '1';
+    const rowJan = (row) => setPcsKey(row.getAttribute('data-jancode') || row.cells[5]?.innerText || '');
+    const qtyCellOf = (row) => row.querySelector('.item-quantity') || row.cells[6] || row.cells[7];
+    function rowQty(row) {
+        const tot = parseInt(row.dataset.tmTotalQty || '', 10);           // 블록 2가 합친 줄의 합계
+        if (!isNaN(tot)) return tot;
+        const cell = qtyCellOf(row);
+        for (const el of [cell, row]) {
+            const a = el && el.getAttribute('data-quantity');
+            if (a !== null && a !== undefined && a !== '' && !isNaN(parseInt(a, 10))) return parseInt(a, 10);
+        }
+        if (!cell) return 0;
+        const clone = cell.cloneNode(true);
+        clone.querySelectorAll('.scan-counter-badge').forEach(b => b.remove());
+        return parseInt((clone.textContent || '').replace(/[^0-9]/g, '') || '0', 10);
+    }
+    function calc(jan, qty, pcs) {
+        if (/-H$/i.test(jan)) return { sets: qty, pieces: qty * pcs, rem: 0, half: true };
+        return { sets: Math.floor(qty / pcs), pieces: qty, rem: qty % pcs, half: false };
+    }
+
+    function render() {
+        const modal = document.getElementById('packingModal');
+        const tbody = document.getElementById('packingItemsTbody');
+        if (!modal || !tbody) return;
+        const found = [];
+        tbody.querySelectorAll('tr').forEach(row => {
+            const cell = qtyCellOf(row);
+            if (!cell) return;
+            const jan = rowJan(row);
+            const pcs = map[jan];
+            if (!pcs || isMergedChild(row)) {
+                if (cell.classList.contains('tm-setpcs-cell')) {
+                    cell.classList.remove('tm-setpcs-cell', 'tm-setpcs-warn');
+                    cell.removeAttribute('data-tm-setpcs');
+                }
+                return;
+            }
+            const qty = rowQty(row);
+            const r = calc(jan, qty, pcs);
+            const bad = !r.half && (r.rem > 0 || r.sets === 0);
+            const text = r.half
+                ? r.sets + 'セット\n(×' + pcs + ' = ' + r.pieces + '個)'
+                : '= ' + r.sets + 'セット' + (r.rem ? ' +' + r.rem + '個 ⚠' : '') + '\n(1セット' + pcs + '個入)';
+            if (cell.getAttribute('data-tm-setpcs') !== text) cell.setAttribute('data-tm-setpcs', text);
+            if (!cell.classList.contains('tm-setpcs-cell')) cell.classList.add('tm-setpcs-cell');
+            cell.classList.toggle('tm-setpcs-warn', bad);
+            found.push({ jan: jan, pcs: pcs, qty: qty, r: r, bad: bad });
+        });
+
+        const body = modal.querySelector('.modal-body') || modal;
+        let banner = document.getElementById('tm-setpcs-banner');
+        if (!found.length) { if (banner) banner.remove(); return; }
+        if (!banner || !body.contains(banner)) {
+            if (banner) banner.remove();
+            banner = document.createElement('div');
+            banner.id = 'tm-setpcs-banner';
+            body.prepend(banner);
+        }
+        const anyBad = found.some(f => f.bad);
+        const html = '<div class="t">🧩 セット商品 ' + found.length + '件 — 数量は「個数」です。箱の「○種類」ではなく<u>セット数</u>で確認！</div>' +
+            '<div class="chips">' + found.map(f =>
+                '<span class="chip' + (f.bad ? ' bad' : '') + '">…' + f.jan.slice(-6) + ' : ' +
+                (f.r.half ? f.qty + 'セット×' + f.pcs + '個' : f.qty + '個 = <b>' + f.r.sets + 'セット</b>' + (f.r.rem ? ' +' + f.r.rem + '個 ⚠' : '')) +
+                '</span>').join('') + '</div>' +
+            (loadErr ? '<div style="color:#c62828;font-weight:700;margin-top:3px;">⚠ シート読込失敗(' + loadErr + ') — 前回の内容で表示中</div>' : '');
+        banner.classList.toggle('warn', anyBad);
+        if (banner.innerHTML !== html) banner.innerHTML = html;
+    }
+
+    function start() {
+        refresh(false);
+        let wasOpen = false;
+        setInterval(() => {
+            const modal = document.getElementById('packingModal');
+            const open = !!modal && (modal.classList.contains('show') || getComputedStyle(modal).display === 'block');
+            if (open && !wasOpen) refresh(false);   // 모달을 열 때 3분 이상 지났으면 새로 읽기
+            wasOpen = open;
+            if (open) render();
+        }, 700);
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+    else start();
 })();
