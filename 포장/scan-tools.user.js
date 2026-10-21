@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.8.4
+// @version      1.8.5
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -203,6 +203,14 @@
  *    않고, 사이트 원래 검색이 고른 카테고리 그대로 실행됩니다.
  *  - 바코드 스캐너 입력(아주 빠름)이라도 카테고리를 직접 바꿔 둔 경우에는 그 카테고리를
  *    유지합니다. 카테고리를 건드리지 않았을 때만 기존처럼 출고번호로 맞춰 검색합니다.
+ *
+ *  v1.8.5 버그 수정 (보고: "OS152423946 멀티박스 13박스 87.7kg인데 '박스 1개당 87.7kg 너무 무겁다'고 나온다")
+ *  - [블록 2] 원인: 박스 수를 box_cnt1~5 입력칸에서만 읽어서, 멀티박스(박스별 사이즈 목록 箱1~箱13)
+ *    출고건은 박스 수를 1개로 잘못 셌습니다.
+ *    → 이제 포장 화면의 "箱1, 箱2 …" 줄 수도 함께 세고, 둘 중 큰 값을 박스 수로 씁니다.
+ *  - [블록 2] 박스가 2개 이상이면 "전체 30kg 초과" 경고는 띄우지 않습니다. (박스 1개당 25kg 기준으로만 검사)
+ *    예) 13박스 87.7kg → 박스 1개당 약 6.7kg → 정상, 경고 없음
+ *  - [블록 2] 무게 확인창 문구·버튼을 전부 일본어로 변경
  *
  *  v1.8.4 긴급 버그 수정 (보고: "종류 67개인데 63번까지만 보이고, 종류수가 54/67에서 안 올라가는데 '전체 54건 스캔 완료'로 나온다")
  *  - [블록 2] 원인 1: 같은 상품을 합칠 때 합쳐진 줄을 표에서 "삭제"하고 있었습니다. 사이트는 원래
@@ -1528,7 +1536,15 @@
             const n = parseFloat(String(inp.value).replace(/[^0-9.]/g, ''));
             if (!isNaN(n)) total += n;
         });
-        return total;
+        // [v1.8.5] 멀티박스: 박스별 사이즈 목록의 "箱1, 箱2 …" 라벨 중 가장 큰 번호를 박스 수로 사용
+        let multi = 0;
+        const scope = document.getElementById('packingModal') || document.body;
+        scope.querySelectorAll('th, td, label, span, div').forEach(el => {
+            if (el.children.length > 0) return; // 글자만 있는 칸만
+            const m = String(el.textContent || '').trim().match(/^箱\s*(\d{1,3})$/);
+            if (m) multi = Math.max(multi, parseInt(m[1], 10));
+        });
+        return Math.max(total, multi);
     };
 
     const checkWeightProblems = () => {
@@ -1539,20 +1555,21 @@
         const problems = [];
 
         if (raw === '' || isNaN(w) || w <= 0) {
-            problems.push('무게가 비어 있거나 0입니다.');
+            problems.push('重量が未入力、または0です。');
             return problems;
         }
-        if (w > TM_CONFIG.WEIGHT_MAX_KG) {
-            problems.push(`무게 ${w}kg — ${TM_CONFIG.WEIGHT_MAX_KG}kg를 넘습니다. g로 입력하지 않았는지 확인하세요. (예: 1200g → 1.2)`);
-        }
         const boxes = getBoxCountTotal();
+        // [v1.8.5] 박스 2개 이상(멀티박스)은 전체 무게 상한 대신 박스 1개당 기준으로만 검사
+        if (boxes <= 1 && w > TM_CONFIG.WEIGHT_MAX_KG) {
+            problems.push(`重量 ${w}kg — ${TM_CONFIG.WEIGHT_MAX_KG}kgを超えています。g単位で入力していないか確認してください。（例：1200g → 1.2）`);
+        }
         if (boxes > 0) {
             const perBox = w / boxes;
             const perBoxText = Math.round(perBox * 100) / 100;
             if (perBox < TM_CONFIG.WEIGHT_PER_BOX_MIN_KG) {
-                problems.push(`박스 ${boxes}개에 ${w}kg — 박스 1개당 ${perBoxText}kg로 너무 가볍습니다. (기준 ${TM_CONFIG.WEIGHT_PER_BOX_MIN_KG}kg 이상)`);
+                problems.push(`${boxes}箱で${w}kg — 1箱あたり${perBoxText}kgで軽すぎます。（基準：${TM_CONFIG.WEIGHT_PER_BOX_MIN_KG}kg以上）`);
             } else if (perBox > TM_CONFIG.WEIGHT_PER_BOX_MAX_KG) {
-                problems.push(`박스 ${boxes}개에 ${w}kg — 박스 1개당 ${perBoxText}kg로 너무 무겁습니다. (기준 ${TM_CONFIG.WEIGHT_PER_BOX_MAX_KG}kg 이하)`);
+                problems.push(`${boxes}箱で${w}kg — 1箱あたり${perBoxText}kgで重すぎます。（基準：${TM_CONFIG.WEIGHT_PER_BOX_MAX_KG}kg以下）`);
             }
         }
         return problems;
@@ -1579,11 +1596,11 @@
             box-shadow: 0 10px 40px rgba(0,0,0,.4); overflow: hidden;
         `;
         box.innerHTML = `
-            <div style="background:#ef6c00;color:#fff;padding:16px 20px;font-size:22px;font-weight:800;">⚠ 무게를 확인해 주세요</div>
+            <div style="background:#ef6c00;color:#fff;padding:16px 20px;font-size:22px;font-weight:800;">⚠ 重量を確認してください</div>
             <div class="tm-wc-body" style="padding:18px 20px;font-size:17px;line-height:1.6;color:#333;"></div>
             <div style="display:flex;gap:10px;padding:0 20px 20px;">
-                <button type="button" class="tm-wc-fix" style="flex:1;padding:12px;font-size:17px;font-weight:700;border:0;border-radius:8px;background:#1e88e5;color:#fff;cursor:pointer;">다시 입력 (Enter / Esc)</button>
-                <button type="button" class="tm-wc-go" style="flex:1;padding:12px;font-size:17px;font-weight:700;border:2px solid #ef6c00;border-radius:8px;background:#fff;color:#ef6c00;cursor:pointer;">그대로 진행 (Y)</button>
+                <button type="button" class="tm-wc-fix" style="flex:1;padding:12px;font-size:17px;font-weight:700;border:0;border-radius:8px;background:#1e88e5;color:#fff;cursor:pointer;">再入力 (Enter / Esc)</button>
+                <button type="button" class="tm-wc-go" style="flex:1;padding:12px;font-size:17px;font-weight:700;border:2px solid #ef6c00;border-radius:8px;background:#fff;color:#ef6c00;cursor:pointer;">このまま進む (Y)</button>
             </div>
         `;
         const body = box.querySelector('.tm-wc-body');
