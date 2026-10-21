@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [피킹] 태블릿 피킹 (タブレットピッキング)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.14.0
+// @version      1.15.0
 // @description  피킹리스트를 인쇄하지 않고 태블릿에서 바로 보면서 피킹. 출고건 선택 → 로케이션 순서로 합친 피킹 화면 → 탭/JAN 스캔으로 체크 → 완료 후 출고건별 仕分けリスト 인쇄.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
@@ -125,6 +125,14 @@
  *  - 위쪽 [📋 전체 목록] 버튼 → 종이 피킹리스트처럼 모든 출고건·상품을 한 화면에 표시
  *  - 피킹 끝난 줄은 ✓ 체크 + 회색, 일부만 한 줄은 노란색(◐), 남은 줄은 □
  *  - [전체] / [남은 것만] 전환, 줄을 누르면 그 상품 카드로, 출고건 제목을 누르면 그 출고건으로 이동
+ *
+ *  v1.15.0 (2026-10-21) — 세트 낱개수 표시 (입고 때 등록)
+ *  - 요청: "겉면 8종류인데 실제 16개 든 세트상품을 2세트로 착각해 출고한다" → 피킹리스트·포장화면과 같은 기능을 태블릿에도
+ *  - 입고 담당자가 등록한 1세트 낱개수(구글시트 아타리쿠지_세트기준 파일의 '세트낱개수' 탭)를 읽어서
+ *    수량칸에 "= 1세트 (1세트 16개입)"를 크게 표시 (파란 줄). 세트 배수가 아니면 빨간 "⚠ 나머지 ○개"
+ *  - -H(하프)는 수량 자체가 세트 수 → "× 20개입 = 총 40개"
+ *  - 전체 목록 화면에도 같은 내용 표시. 피킹 화면을 열 때마다 시트를 다시 읽음(1분 안 중복 생략)
+ *  - 쿠지(KUJI) 상품은 기존 쿠지 세트 계산 그대로
  *
  *  v1.14.0 (2026-10-20) — 전체 목록에서 바로 체크
  *  - 전체 목록 왼쪽 □ 버튼을 누르면 1개씩 체크 (크고 한 개씩 집는 상품용)
@@ -547,6 +555,47 @@
         return Object.assign({}, local, KUJI_SETS, kujiSheet.sets);
     }
     const fmtSets = (n) => Number.isInteger(n) ? String(n) : n.toFixed(1);
+
+    // ===== [v1.15.0] 세트 낱개수 (입고 담당자가 입고 화면에서 등록, 시트 '세트낱개수' 탭) =====
+    const SETPCS_CSV_URL = 'https://docs.google.com/spreadsheets/d/' + KUJI_SHEET_ID + '/gviz/tq?tqx=out:csv&headers=1&sheet=' + encodeURIComponent('세트낱개수');
+    const setPcsKey = (j) => String(j || '').replace(/\s+/g, '').toUpperCase();
+    let setPcsSheet = { map: {}, error: '', at: 0, loading: null };
+    function refreshSetPcs(force) {
+        if (setPcsSheet.loading) return setPcsSheet.loading;
+        if (!force && setPcsSheet.at && Date.now() - setPcsSheet.at < 60 * 1000) return Promise.resolve();
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 10000);
+        setPcsSheet.loading = fetch(SETPCS_CSV_URL + '&_=' + Date.now(), { cache: 'no-store', signal: ctrl.signal })
+            .then(res => { if (!res.ok) throw new Error('HTTP ' + res.status); return res.text(); })
+            .then(text => {
+                if (/^\s*</.test(text)) throw new Error('시트 공유 설정 확인 필요');
+                const rows = parseCsv(text);
+                const map = {};
+                // 탭이 없으면 구글이 첫 번째 탭을 대신 돌려줌 → 머리글로 확인
+                if (rows.length && /낱개/.test(rows[0].join(','))) {
+                    rows.slice(1).forEach(r => {
+                        const jan = setPcsKey(r[0]).replace(/\.0+$/, '');
+                        const pcs = parseInt(String(r[1] || '').replace(/[^\d]/g, ''), 10);
+                        if (jan && pcs > 1) map[jan] = pcs;
+                    });
+                }
+                setPcsSheet = { map: map, error: '', at: Date.now(), loading: null };
+            })
+            .catch(e => {
+                console.warn('[태블릿피킹] 세트낱개수 시트 읽기 실패', e);
+                setPcsSheet = { map: setPcsSheet.map, error: (e && e.name === 'AbortError') ? '응답 없음' : String(e.message || e), at: Date.now(), loading: null };
+            })
+            .finally(() => { clearTimeout(timer); if (PK) render(); });
+        return setPcsSheet.loading;
+    }
+    // 줄 하나의 세트 계산 (등록 안 됐거나 쿠지면 null)
+    function setPcsOf(l) {
+        if (!l || l.isTrk || l.isKuji) return null;
+        const pcs = setPcsSheet.map[setPcsKey(l.jan)];
+        if (!(pcs > 1)) return null;
+        if (/-H$/i.test(String(l.jan))) return { pcs: pcs, half: true, sets: l.total, pieces: l.total * pcs, rem: 0 };
+        return { pcs: pcs, half: false, sets: Math.floor(l.total / pcs), pieces: l.total, rem: l.total % pcs };
+    }
     // 출고건 하나: 메인 잔코드가 없는 쿠지 묶음별 세트 계산
     function kujiInfoFor(b, oi) {
         const sets = kujiSets();
@@ -872,6 +921,8 @@
     #tmtp .qty .q{font-size:32px;font-weight:900;color:#d00;line-height:1}
     #tmtp .qty .st{font-size:15px;font-weight:900;color:#ff3e1d;margin-top:2px}
     #tmtp .qty .pc{font-size:13px;font-weight:900;color:#1565c0;margin-top:2px;text-align:center}
+    #tmtp .qty .sp{font-size:20px;font-weight:900;color:#fff;background:#1565c0;border-radius:6px;padding:1px 6px;margin-top:3px;white-space:nowrap}
+    #tmtp .qty .spw{font-size:12px;font-weight:900;color:#fff;background:#c62828;border-radius:4px;padding:1px 4px;margin-top:2px}
     #tmtp .qty .warn{font-size:12px;font-weight:900;color:#fff;background:#e69500;border-radius:4px;padding:1px 4px;margin-top:2px}
     #tmtp .lcs{width:150px;flex:none;display:flex;flex-direction:column;align-items:center;justify-content:center;border-left:1px solid #e2e8f0;padding:4px;text-align:center;font-size:17px;font-weight:900;line-height:1.3;word-break:break-all}
     #tmtp .lcs .tk{font-size:12px;font-weight:700;color:#3b82f6;margin-top:3px}
@@ -1053,7 +1104,7 @@
             const kr = e.target.closest('[data-kreg]');
             if (kr) { registerKujiLocal(kr.dataset.kreg, kr.dataset.grades || ''); return; }
             if (e.target.closest('[data-ksheet]')) { window.open(KUJI_SHEET_EDIT_URL, '_blank'); return; }
-            if (e.target.closest('[data-kreload]')) { refreshKujiSheet(true); toastMsg('세트 기준 시트를 다시 읽는 중...', true); return; }
+            if (e.target.closest('[data-kreload]')) { refreshKujiSheet(true); refreshSetPcs(true); toastMsg('세트 기준 시트를 다시 읽는 중...', true); return; }
             const mb = e.target.closest('.mb');
             const card = e.target.closest('.card');
             if (!card) return;
@@ -1089,6 +1140,7 @@
         render();
         injectResumeButton();
         refreshKujiSheet(false);
+        refreshSetPcs(true);   // [v1.15.0] 피킹 화면을 열 때마다 최신 세트 낱개수
     }
 
     const ZOOM_KEY = 'tmTabletPicking.zoom';
@@ -1229,7 +1281,15 @@
                 if (k && (k.status === 'ok' || k.status === 'odd') && String(k.conf.grade) === m[2]) { qtyExtra = `<div class="st">(${fmtSets(k.sets)} set)</div>`; rowCls = ' main'; }
             }
             // [v1.8.0] 세트 개수 (포장 화면 옵션 / 상품명 "nP SET")
-            if (l.pset > 0 && !l.isKuji) {
+            const sp = setPcsOf(l);
+            if (sp) {
+                // [v1.15.0] 입고 때 등록한 1세트 낱개수
+                qtyExtra += sp.half
+                    ? `<div class="sp">${sp.sets}세트</div><div class="pc">× ${sp.pcs}개입<br>= 총 ${sp.pieces}개</div>`
+                    : `<div class="sp">= ${sp.sets}세트</div><div class="pc">(1세트 ${sp.pcs}개입)</div>` +
+                      (sp.rem || !sp.sets ? `<div class="spw">⚠ ${sp.sets ? '나머지 ' + sp.rem + '개' : '1세트 미만'}</div>` : '');
+                rowCls = ' half';
+            } else if (l.pset > 0 && !l.isKuji) {
                 qtyExtra += `<div class="pc">${l.pset}P SET${l.sets ? `<br>× ${l.sets}세트` : ''}</div>`; rowCls = ' half';
             } else if (l.pcs > 0 && (l.isHalf || !l.isKuji)) {
                 const u = l.unit || '세트';
@@ -1288,7 +1348,11 @@
             if (k && (k.status === 'ok' || k.status === 'odd') && String(k.conf.grade) === m[2]) t.push(fmtSets(k.sets) + ' set');
         }
         let warn = false;
-        if (l.pset > 0 && !l.isKuji) t.push(l.pset + 'P SET' + (l.sets ? ' × ' + l.sets + '세트' : ''));
+        const sp = setPcsOf(l);
+        if (sp) {
+            if (sp.half) t.push(sp.sets + '세트 × ' + sp.pcs + '개입 = ' + sp.pieces + '개');
+            else { t.push('= ' + sp.sets + '세트 (1세트 ' + sp.pcs + '개입)' + (sp.rem ? ' ⚠ 나머지 ' + sp.rem + '개' : '')); if (sp.rem || !sp.sets) warn = true; }
+        } else if (l.pset > 0 && !l.isKuji) t.push(l.pset + 'P SET' + (l.sets ? ' × ' + l.sets + '세트' : ''));
         else if (l.pcs > 0 && (l.isHalf || !l.isKuji)) t.push(l.total + (l.unit || '세트') + ' × ' + l.pcs + '개입 = ' + (l.total * l.pcs) + '개');
         else if (l.isHalf || (l.isSetName && !l.isKuji)) { t.push('⚠ 세트 개수 미기재'); warn = true; }
         return t.length ? `<small${warn ? ' class="w"' : ''}>${t.map(esc).join('<br>')}</small>` : '';
