@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [입고] JAN코드 화면 단축키 통합 (JAN이동 + Enter이동 + F1/F2/F3 + 합계패널 + JAN 6자리강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.4.0
-// @description  jancode 페이지 통합본. 원본: A-1-9(JAN 검색이동) + A-1-6(Enter 행이동) + A-1-7(F3) + A-1-8(F1) + A-1-10(F2)
+// @version      1.5.0
+// @description  jancode 페이지 통합본. 원본: A-1-9(JAN 검색이동) + A-1-6(Enter 행이동) + A-1-7(F3) + A-1-8(F1) + A-1-10(F2). v1.5.0: 입고 창에 세트상품 "1セット個数(1세트 낱개수)" 등록 칸 추가 → 구글시트 '세트낱개수' 탭에 저장, 피킹리스트·포장화면에 세트수로 표시됨
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/store/jancode*
 // @match        *://platform.co.jp/admin/store/jancode*
@@ -60,6 +60,16 @@
  *   노란 바탕 + 빨간 굵은 글씨 + 1.35배 크기로 표시합니다. (V7.8과 같은 모양)
  * - JAN 칸은 표 머리글("JAN")로 찾고, 못 찾으면 예전 위치(목록 4번째 칸 / 입고 창 3번째 칸)를 씁니다.
  * - 화면이 바뀌거나 검색·페이지 이동으로 줄이 새로 그려져도 자동으로 다시 강조합니다.
+ *
+ * [v1.5.0 변경 사항] "세트상품이 1세트 더 나가거나 빠진다" (겉면 8종류인데 실제 16개 든 상품)
+ * - 출고목록 수량은 낱개(16)인데, 겉면 "8종류"를 보고 16÷8=2세트로 착각해서 2세트를 출고하는 문제.
+ * - 블록 9(신규): JAN 입고 창 각 줄 맨 오른쪽에 [1セット個数] 칸을 추가했습니다.
+ *   버튼을 눌러 "1세트 안에 실제로 들어 있는 낱개 수"를 입력하면 구글시트(아타리쿠지_세트기준 파일의
+ *   '세트낱개수' 탭)에 저장되고, 피킹리스트·포장화면에서 "16個 = 1セット" 처럼 세트 수로 표시됩니다.
+ * - 이미 등록된 상품은 칸에 "16個/セット" 이 보이고, 입고 수량이 세트 배수가 아니면 빨간 경고가 뜹니다.
+ * - 0 을 입력하면 등록을 지웁니다. 버튼은 입력칸이 아니라서 Enter 이동(블록 2)·합계(블록 6)에 영향 없음.
+ * - 저장용 웹 앱 주소는 입고 PC마다 처음 한 번만 물어보고 그 PC에 기억합니다(공개 GitHub에 안 올라감).
+ *   주소를 바꾸려면 표 머리글 "セット個数" 옆 ⚙ 를 누르세요.
  */
 
 (function() {
@@ -507,6 +517,298 @@
         const schedule = () => { clearTimeout(timer); timer = setTimeout(run, 80); };
         run();
         new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+    })();
+
+    /* ------------------------------------------------------------
+     * [블록 9] v1.5.0 — 세트상품 1세트 낱개수 등록 (입고 창 맨 오른쪽 칸)
+     *  저장: Apps Script 웹 앱 → 구글시트 '세트낱개수' 탭
+     *  읽기: 같은 시트를 CSV로 (피킹리스트·포장화면도 같은 방식으로 읽음)
+     * ------------------------------------------------------------ */
+    (function setPcsBlock() {
+        const SETPCS_SHEET_ID = '1dEuXsgKJsdsM4FFHEgnuSE3droNVPQawF5z8hQgO59Q'; // 아타리쿠지_세트기준 파일
+        const SETPCS_TAB = '세트낱개수';
+        const SETPCS_CSV_URL = 'https://docs.google.com/spreadsheets/d/' + SETPCS_SHEET_ID +
+            '/gviz/tq?tqx=out:csv&headers=1&sheet=' + encodeURIComponent(SETPCS_TAB);
+        const URL_KEY = 'tmSetPcsWebAppUrl';
+        const BY_KEY = 'tmSetPcsStaff';
+        const setPcsKey = (j) => String(j || '').replace(/\s+/g, '').toUpperCase();
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+        function parseCsv(text) {
+            const rows = []; let row = [], cur = '', q = false;
+            for (let i = 0; i < text.length; i++) {
+                const c = text[i];
+                if (q) {
+                    if (c === '"' && text[i + 1] === '"') { cur += '"'; i++; }
+                    else if (c === '"') q = false;
+                    else cur += c;
+                } else if (c === '"') q = true;
+                else if (c === ',') { row.push(cur); cur = ''; }
+                else if (c === '\n' || c === '\r') {
+                    if (c === '\r' && text[i + 1] === '\n') i++;
+                    row.push(cur); rows.push(row); row = []; cur = '';
+                } else cur += c;
+            }
+            if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+            return rows;
+        }
+
+        async function loadSetPcsMap() {
+            try {
+                const ctrl = new AbortController();
+                const t = setTimeout(() => ctrl.abort(), 8000);
+                const res = await fetch(SETPCS_CSV_URL + '&_=' + Date.now(), { cache: 'no-store', signal: ctrl.signal })
+                    .finally(() => clearTimeout(t));
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const text = await res.text();
+                if (/^\s*</.test(text)) throw new Error('시트 공유 설정 확인 필요');
+                const rows = parseCsv(text);
+                // 탭이 없으면 구글이 첫 번째 탭(쿠지 세트기준)을 대신 돌려줌 → 머리글로 확인
+                if (!rows.length || !/낱개/.test(rows[0].join(','))) return { map: {}, error: '', missing: true };
+                const map = {};
+                rows.slice(1).forEach(r => {
+                    const jan = setPcsKey(r[0]).replace(/\.0+$/, '');
+                    const pcs = parseInt(String(r[1] || '').replace(/[^\d]/g, ''), 10);
+                    if (jan && pcs > 1) map[jan] = { pcs: pcs, name: String(r[2] || '') };
+                });
+                return { map: map, error: '', missing: false };
+            } catch (e) {
+                console.warn('[세트낱개수] 시트 읽기 실패', e);
+                return { map: {}, error: String(e.message || e), missing: false };
+            }
+        }
+
+        let cache = { map: {}, at: 0, error: '', missing: false };
+        let loading = null;
+        const pending = {}; // jan → { pcs, state: 'saving' | 'error' | 'unverified', msg }
+
+        function refresh(force) {
+            if (loading) return loading;
+            if (!force && cache.at && Date.now() - cache.at < 60000) return Promise.resolve(cache);
+            loading = loadSetPcsMap().then(r => {
+                // 읽기 실패 시 직전 값은 유지
+                cache = r.error ? Object.assign({}, cache, { error: r.error, at: Date.now() }) : Object.assign(r, { at: Date.now() });
+                loading = null;
+                render();
+                return cache;
+            });
+            return loading;
+        }
+
+        /* ---------- 스타일 ---------- */
+        const st = document.createElement('style');
+        st.textContent = `
+            #scan-tbody td.tm-setpcs-td, th.tm-setpcs-th { min-width: 96px; text-align: center; vertical-align: middle; }
+            th.tm-setpcs-th { background: #e3f2fd; color: #0d47a1; font-size: 12px; white-space: nowrap; }
+            th.tm-setpcs-th .tm-setpcs-gear { cursor: pointer; margin-left: 4px; opacity: .6; }
+            .tm-setpcs-btn { border: 1.5px dashed #90a4ae; background: #fff; color: #78909c; border-radius: 6px;
+                padding: 3px 8px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+            .tm-setpcs-btn.hint { border-color: #fb8c00; color: #e65100; background: #fff8e1; }
+            .tm-setpcs-btn.set { border: 2px solid #1565c0; background: #1565c0; color: #fff; font-size: 13px; }
+            .tm-setpcs-btn.busy { border-color: #fbc02d; background: #fff9c4; color: #5d4037; }
+            .tm-setpcs-btn.err { border-color: #c62828; background: #ffebee; color: #c62828; }
+            .tm-setpcs-note { font-size: 11px; font-weight: 800; margin-top: 2px; line-height: 1.2; }
+            .tm-setpcs-note.ok { color: #2e7d32; }
+            .tm-setpcs-note.bad { color: #fff; background: #c62828; border-radius: 3px; padding: 1px 3px; }
+            #tm-setpcs-toast { position: fixed; left: 50%; top: 18px; transform: translateX(-50%); z-index: 30000;
+                padding: 10px 20px; border-radius: 8px; color: #fff; font-weight: 700; font-size: 15px;
+                box-shadow: 0 4px 16px rgba(0,0,0,.3); pointer-events: none; transition: opacity .2s; }
+        `;
+        document.head.appendChild(st);
+
+        let toastTimer = null;
+        function toast(msg, color) {
+            let t = document.getElementById('tm-setpcs-toast');
+            if (!t) { t = document.createElement('div'); t.id = 'tm-setpcs-toast'; document.body.appendChild(t); }
+            t.style.background = color || '#1565c0';
+            t.textContent = msg;
+            t.style.opacity = '1';
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => { t.style.opacity = '0'; }, 2500);
+        }
+
+        /* ---------- 줄 정보 읽기 ---------- */
+        const rowJan = (tr) => setPcsKey(tr.getAttribute('data-jancode'));
+        const rowQty = (tr) => { const q = tr.querySelector('input.quantity'); return q ? (parseInt(q.value, 10) || 0) : 0; };
+        function rowName(tr) {
+            // 입력칸·우리 칸을 뺀 칸 중에서 숫자만이 아닌 가장 긴 글자 = 상품명(기록용)
+            let best = '';
+            Array.from(tr.cells).forEach(td => {
+                if (td.classList.contains('tm-setpcs-td') || td.querySelector('input, select, button')) return;
+                const t = (td.innerText || '').replace(/\s+/g, ' ').trim();
+                if (t.length > best.length && !/^[\d\s\-.,]+$/.test(t)) best = t;
+            });
+            return best.slice(0, 120);
+        }
+        // 이름에 세트 느낌이 나면 버튼을 주황색으로 (등록을 잊지 않도록)
+        const looksLikeSet = (name) => /SET|セット|세트|BOX|ボックス|박스|全\s*\d+\s*種|\d+\s*種|\d+\s*종|入り|개입|PCS/i.test(name);
+
+        function ensureHeader(table) {
+            const htr = table.querySelector('thead tr');
+            if (!htr || htr.querySelector('th.tm-setpcs-th')) return;
+            const th = document.createElement('th');
+            th.className = 'tm-setpcs-th';
+            th.innerHTML = 'セット個数<span class="tm-setpcs-gear" title="저장 주소 다시 입력">⚙</span>';
+            htr.appendChild(th);
+        }
+
+        function render() {
+            const modal = findStoreModal();
+            const tbody = document.getElementById('scan-tbody');
+            if (!modal || !tbody || !modal.contains(tbody)) return;
+            const table = tbody.closest('table');
+            if (table) ensureHeader(table);
+
+            tbody.querySelectorAll('tr').forEach(tr => {
+                const jan = rowJan(tr);
+                if (!jan) return;
+                let td = tr.querySelector('td.tm-setpcs-td');
+                if (!td) {
+                    td = document.createElement('td');
+                    td.className = 'tm-setpcs-td';
+                    td.innerHTML = '<button type="button" class="tm-setpcs-btn" tabindex="-1"></button><div class="tm-setpcs-note"></div>';
+                    tr.appendChild(td);
+                }
+                const btn = td.querySelector('.tm-setpcs-btn');
+                const note = td.querySelector('.tm-setpcs-note');
+                const p = pending[jan];
+                const entry = cache.map[jan];
+                const pcs = p && p.state === 'saving' ? p.pcs : (entry ? entry.pcs : 0);
+                const half = /-H$/i.test(jan);
+
+                let cls = 'tm-setpcs-btn', label = '＋ 등록', noteCls = 'tm-setpcs-note', noteTxt = '';
+                if (p && p.state === 'saving') { cls += ' busy'; label = '저장중… ' + (p.pcs > 1 ? p.pcs + '個' : '삭제'); }
+                else if (p && p.state === 'error') { cls += ' err'; label = '⚠ 저장실패 (다시)'; noteTxt = p.msg || ''; noteCls += ' bad'; }
+                else if (p && p.state === 'unverified') { cls += ' busy'; label = '⏳ ' + (p.pcs > 1 ? p.pcs + '個' : '삭제') + ' 확인중'; noteTxt = '잠시 후 자동 확인'; }
+                else if (pcs > 1) {
+                    cls += ' set'; label = pcs + '個/セット ✎';
+                    const qty = rowQty(tr);
+                    if (qty > 0 && !half) {
+                        if (qty % pcs === 0) { noteCls += ' ok'; noteTxt = '= ' + (qty / pcs) + 'セット'; }
+                        else { noteCls += ' bad'; noteTxt = '⚠ 세트 배수 아님 (' + Math.floor(qty / pcs) + 'セット+' + (qty % pcs) + '個)'; }
+                    } else if (qty > 0 && half) {
+                        noteCls += ' ok'; noteTxt = '= ' + (qty * pcs) + '個 (ハーフ)';
+                    }
+                } else if (looksLikeSet(rowName(tr))) cls += ' hint';
+
+                if (btn.className !== cls) btn.className = cls;
+                if (btn.textContent !== label) btn.textContent = label;
+                if (note.className !== noteCls) note.className = noteCls;
+                if (note.textContent !== noteTxt) note.textContent = noteTxt;
+            });
+        }
+
+        /* ---------- 저장 ---------- */
+        function getUrl(forceAsk) {
+            let url = '';
+            try { url = localStorage.getItem(URL_KEY) || ''; } catch (_) {}
+            if (url && !forceAsk) return url;
+            const v = prompt('[세트 낱개수 저장 주소]\n구글 Apps Script "웹 앱 URL"을 붙여넣어 주세요.\n(https://script.google.com/macros/s/…/exec)\n이 PC에서 처음 한 번만 입력합니다.', url);
+            if (v === null) return '';
+            const u = v.trim();
+            if (!/^https:\/\/script\.google\.com\/(a\/macros\/[\w.-]+|macros)\/s\/[\w-]+\/exec$/.test(u)) { alert('주소 형식이 맞지 않습니다. …/exec 로 끝나는 웹 앱 URL을 붙여넣어 주세요.'); return ''; }
+            try { localStorage.setItem(URL_KEY, u); } catch (_) {}
+            return u;
+        }
+        function getBy() {
+            let by = null;
+            try { by = localStorage.getItem(BY_KEY); } catch (_) {}
+            if (by === null) {
+                by = (prompt('입고 담당자 이름 (누가 등록했는지 시트에 기록됩니다. 비워도 됨)', '') || '').trim() || '-';
+                try { localStorage.setItem(BY_KEY, by); } catch (_) {}
+            }
+            return by;
+        }
+
+        async function save(jan, pcs, name) {
+            const url = getUrl(false);
+            if (!url) return;
+            const by = getBy();
+            pending[jan] = { pcs: pcs, state: 'saving' };
+            render();
+            const payload = JSON.stringify({ jan: jan, pcs: pcs, name: name, by: by });
+
+            // 1) 보통은 응답(JSON)을 바로 읽을 수 있음
+            try {
+                const res = await fetch(url, { method: 'POST', body: payload });
+                const j = await res.json();
+                if (j && j.ok) {
+                    if (pcs > 1) cache.map[jan] = { pcs: pcs, name: name }; else delete cache.map[jan];
+                    delete pending[jan];
+                    render();
+                    toast(pcs > 1 ? '✅ ' + jan.slice(-6) + ' : 1セット ' + pcs + '個 등록' : '🗑 ' + jan.slice(-6) + ' 등록 삭제', pcs > 1 ? '#2e7d32' : '#546e7a');
+                    return;
+                }
+                pending[jan] = { pcs: pcs, state: 'error', msg: (j && j.error) || '저장 실패' };
+                render();
+                toast('⚠ 저장 실패: ' + ((j && j.error) || ''), '#c62828');
+                return;
+            } catch (e) {
+                // 2) 응답을 못 읽는 환경이면: 보내기만 하고 시트를 다시 읽어서 확인
+                console.warn('[세트낱개수] 응답 읽기 실패 → 시트로 확인', e);
+                try { await fetch(url, { method: 'POST', mode: 'no-cors', body: payload }); } catch (e2) {
+                    pending[jan] = { pcs: pcs, state: 'error', msg: '전송 실패(인터넷/주소 확인)' };
+                    render(); toast('⚠ 전송 실패: 주소 또는 인터넷 확인', '#c62828');
+                    return;
+                }
+            }
+            pending[jan] = { pcs: pcs, state: 'unverified' };
+            render();
+            for (let i = 0; i < 5; i++) {
+                await sleep(i === 0 ? 800 : 2000);
+                await refresh(true);
+                const got = cache.map[jan] ? cache.map[jan].pcs : 0;
+                if ((pcs > 1 && got === pcs) || (pcs <= 1 && !got)) {
+                    delete pending[jan];
+                    render();
+                    toast('✅ ' + jan.slice(-6) + (pcs > 1 ? ' : 1セット ' + pcs + '個 등록' : ' 등록 삭제'), '#2e7d32');
+                    return;
+                }
+            }
+            pending[jan] = { pcs: pcs, state: 'error', msg: '시트에서 확인 안 됨' };
+            render();
+            toast('⚠ 시트에서 확인되지 않았습니다. 다시 눌러 주세요.', '#c62828');
+        }
+
+        /* ---------- 버튼 클릭 ---------- */
+        document.addEventListener('click', function(e) {
+            const gear = e.target.closest && e.target.closest('th.tm-setpcs-th .tm-setpcs-gear');
+            if (gear) { e.preventDefault(); getUrl(true); return; }
+            const btn = e.target.closest && e.target.closest('.tm-setpcs-btn');
+            if (!btn) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const tr = btn.closest('tr');
+            const jan = tr ? rowJan(tr) : '';
+            if (!jan) return;
+            if (pending[jan] && pending[jan].state === 'saving') return;
+            const name = rowName(tr);
+            const cur = cache.map[jan] ? cache.map[jan].pcs : '';
+            const v = prompt(
+                '[1세트 낱개수 등록]  잔코드: ' + jan + '\n' + (name ? '상품: ' + name.slice(0, 60) + '\n' : '') +
+                '\n1세트 안에 "실제로 들어 있는 낱개 수"를 입력하세요.' +
+                '\n(겉면의 "○種類" 숫자가 아니라 실제 개수 — 출고목록 수량과 같은 단위)' +
+                '\n예) 겉면 8種類, 실제 16개 → 16' +
+                (/-H$/i.test(jan) ? '\n※ -H(ハーフ) 상품: 1세트(1개 단위) 안의 낱개 수' : '') +
+                '\n\n0 입력 = 등록 삭제', cur);
+            if (v === null) return;
+            const n = parseInt(String(v).replace(/[^\d]/g, ''), 10);
+            if (isNaN(n)) { alert('숫자만 입력해 주세요.'); return; }
+            if (n === 1) { alert('1개는 세트가 아니라서 등록하지 않습니다. (지우려면 0)'); return; }
+            if (n > 300 && !confirm(n + '개가 맞습니까?')) return;
+            if (n === 0 && !cur) return;
+            if (n === cur) return;
+            save(jan, n, name);
+        }, true);
+
+        /* ---------- 실행 ---------- */
+        let wasOpen = false;
+        setInterval(() => {
+            const open = !!findStoreModal();
+            if (open && !wasOpen) refresh(true);  // 입고 창을 열 때마다 최신 등록 내용 읽기
+            wasOpen = open;
+            if (open) render();
+        }, 600);
     })();
 
 })();
