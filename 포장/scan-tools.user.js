@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.9.0
+// @version      1.9.1
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7. v1.9.0: 세트상품 세트 수 표시(입고 때 등록한 1세트 낱개수 기준)
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -210,6 +210,11 @@
  *    세트 배수가 아니면 빨간색 "+4個 ⚠". 모달 맨 위에 "🧩 セット商品 n件 — 数量は「個数」です" 배너.
  *  - 표시는 CSS로만 그려서 수량 숫자·상품명·JAN 칸 글자는 그대로 → 합산·스캔 수·과다스캔 판정에 영향 없음.
  *  - -H(ハーフ)는 출고수량 자체가 세트 수이므로 "2セット (×20 = 40個)" 처럼 표시.
+ *
+ *  v1.9.1 버그 수정 (보고: "시트에 낱개수를 넣었는데 포장화면에 안 보인다")
+ *  - [블록 5] 시트를 한 번 읽으면 3분 동안 다시 읽지 않아서, 그 사이에 시트에 넣은 내용이 바로 안 보였음.
+ *    → 페이지를 열 때 항상 새로 읽고, 포장 모달을 열 때마다 다시 읽음(15초 안 중복만 생략).
+ *  - 콘솔(F12)에 "[세트낱개수] 시트 읽기 완료: n건" 기록을 남겨 문제 확인을 쉽게 함.
  *
  *  v1.8.5 버그 수정 (보고: "OS152423946 멀티박스 13박스 87.7kg인데 '박스 1개당 87.7kg 너무 무겁다'고 나온다")
  *  - [블록 2] 원인: 박스 수를 box_cnt1~5 입력칸에서만 읽어서, 멀티박스(박스별 사이즈 목록 箱1~箱13)
@@ -2254,7 +2259,8 @@
 
     function refresh(force) {
         if (loading) return loading;
-        if (!force && loadedAt && Date.now() - loadedAt < 3 * 60 * 1000) return Promise.resolve();
+        // [v1.9.1] 15초 안에 읽은 적이 있으면 다시 읽지 않음 (모달을 열 때마다 최신 시트 반영)
+        if (!force && loadedAt && Date.now() - loadedAt < 15 * 1000) return Promise.resolve();
         loading = (async () => {
             try {
                 const ctrl = new AbortController();
@@ -2275,6 +2281,7 @@
                     });
                 }
                 map = m; loadedAt = Date.now(); loadErr = '';
+                console.log('[세트낱개수] 시트 읽기 완료: ' + Object.keys(m).length + '건' + (rows.length && !/낱개/.test(rows[0].join(',')) ? ' (⚠ 세트낱개수 탭 머리글을 못 찾음)' : ''));
                 try { sessionStorage.setItem(CACHE_KEY, JSON.stringify({ map: map, at: loadedAt })); } catch (_) {}
             } catch (e) {
                 loadErr = String(e.message || e);
@@ -2377,12 +2384,13 @@
     }
 
     function start() {
-        refresh(false);
+        console.log('[세트낱개수] 포장화면 세트 표시 v1.9.1 동작 중');
+        refresh(true);
         let wasOpen = false;
         setInterval(() => {
             const modal = document.getElementById('packingModal');
             const open = !!modal && (modal.classList.contains('show') || getComputedStyle(modal).display === 'block');
-            if (open && !wasOpen) refresh(false);   // 모달을 열 때 3분 이상 지났으면 새로 읽기
+            if (open && !wasOpen) refresh(false);   // [v1.9.1] 모달을 열 때마다 새로 읽기(15초 이내 중복 제외)
             wasOpen = open;
             if (open) render();
         }, 700);
