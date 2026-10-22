@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장 스캔 워크플로우 도구 (QR고속스캔 + 포장모달JAN합산V7.9 + 로케이션일괄체크 + 총수량합계)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.9.1
+// @version      1.11.0
 // @description  포장(shipping/packing) 화면의 바코드 스캔 입출고 작업 흐름 통합본. 원본: QR 출고관리(고속 스캔 최적화) v16.0 + [통합] 플랫폼 포장 및 입고 업무 마스터 툴 v7.9 + [포장] 로케이션 일괄 체크(Ctrl+클릭) v6.1 + [포장] 총 수량 합계 v2.7. v1.9.0: 세트상품 세트 수 표시(입고 때 등록한 1세트 낱개수 기준)
 // @author       물류팀
 // @match        https://www.platform.co.jp/*
@@ -210,6 +210,17 @@
  *    세트 배수가 아니면 빨간색 "+4個 ⚠". 모달 맨 위에 "🧩 セット商品 n件 — 数量は「個数」です" 배너.
  *  - 표시는 CSS로만 그려서 수량 숫자·상품명·JAN 칸 글자는 그대로 → 합산·스캔 수·과다스캔 판정에 영향 없음.
  *  - -H(ハーフ)는 출고수량 자체가 세트 수이므로 "2セット (×20 = 40個)" 처럼 표시.
+ *
+ *  v1.11.0 (요청: "몇 개입 입력과 세트 단위 입고 체크는 따로")
+ *  - [블록 5] 몇 개입 없이 세트 입고만 체크된 발주도 보라 "セット · 数量=セット数". 둘 다 있으면 "(=n個) · m個入"까지
+ *
+ *  v1.10.0 (요청: "거의 대부분 낱개이니 세트로 들어온 경우만 입고 때 세트를 누르게")
+ *  - [블록 5] 입고 화면 [セット入庫]로 세트 단위 입고된 발주(시트 "S발주번호-잔코드")를 로케이션으로 찾아서
+ *    낱개 = 파랑 "= n세트 · 数量=個数", 세트 = 보라 "セット(=n個) · 数量=セット数", 판단 불가 = 주황 "⚠ 個数?セット?"
+ *
+ *  v1.9.2 (요청: "같은 상품이라도 도매처에 따라 세트 단위로 들어오는 상품이 있다")
+ *  - [블록 5] 세트 수 표시는 구매대행 줄에만. No. 칸 아래 상품 구분이 "SHOP購入/SHOP 구매"인 줄은
+ *    수량이 이미 판매 단위(세트)라서 계산하지 않음.
  *
  *  v1.9.1 버그 수정 (보고: "시트에 낱개수를 넣었는데 포장화면에 안 보인다")
  *  - [블록 5] 시트를 한 번 읽으면 3분 동안 다시 읽지 않아서, 그 사이에 시트에 넣은 내용이 바로 안 보였음.
@@ -2251,11 +2262,81 @@
 
     // 페이지가 자주 새로고침되므로 마지막으로 읽은 표를 잠깐 기억해 두고(즉시 표시), 뒤에서 새로 읽음
     let map = {};
+    let marks = {};   // [v1.10.0] 잔코드 → Set(세트 입고 발주번호)
     let loadedAt = 0, loadErr = '', loading = null;
+    const unitCache = new Map();
+    const marksToObj = (mk) => { const o = {}; Object.keys(mk).forEach(k => { o[k] = Array.from(mk[k]); }); return o; };
+    const objToMarks = (o) => { const mk = {}; Object.keys(o || {}).forEach(k => { mk[k] = new Set(o[k]); }); return mk; };
     try {
         const c = JSON.parse(sessionStorage.getItem(CACHE_KEY) || 'null');
-        if (c && c.map) { map = c.map; loadedAt = c.at || 0; }
+        if (c && c.map) { map = c.map; marks = objToMarks(c.marks); loadedAt = c.at || 0; }
     } catch (_) {}
+    /* [세트 입고 판단] 시트 '세트낱개수' 탭의 "S발주번호-잔코드" 줄 = 그 발주는 세트 단위로 입고됨 (입고 화면 [セット入庫])
+     *  - 그 잔코드에 세트 입고 기록이 없으면: 낱개(piece)
+     *  - 있으면: 입고 처리 목록(JAN코드)에서 그 잔코드의 입고 기록(로케이션·발주번호)을 읽어
+     *    출고 상품의 로케이션에 있는 발주가 전부 세트 입고면 set, 전부 아니면 piece, 섞였거나 못 찾으면 unknown */
+    const SetUnit = (function () {
+        const recCache = {};
+        const normLoc = (x) => String(x || '').replace(/\s*:\s*\d+\s*(個|개)\s*$/, '').replace(/\s+/g, '').toUpperCase();
+        function splitRows(rows, keyFn) {
+            const map = {}, marks = {};
+            rows.forEach(r => {
+                const key = keyFn(r[0]);
+                const pcs = parseInt(String(r[1] || '').replace(/[^\d]/g, ''), 10);
+                if (!key || !(pcs > 1)) return;
+                const m = key.match(/^S([0-9A-Z]+)-(.+)$/);
+                if (m) (marks[m[2]] = marks[m[2]] || new Set()).add(m[1]);
+                else map[key] = pcs;
+            });
+            return { map: map, marks: marks };
+        }
+        async function recsOf(jan) {
+            const c = recCache[jan];
+            if (c && Date.now() - c.at < 60 * 1000) return c.promise;
+            const promise = (async () => {
+                try {
+                    const url = location.origin + '/admin/store/jancode?pagesize=200&target=2&start=2025-01-01&keyword=' + encodeURIComponent(jan);
+                    const res = await fetch(url, { credentials: 'include' });
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    const d = new DOMParser().parseFromString(await res.text(), 'text/html');
+                    const table = d.querySelector('.content-wrapper table') || d.querySelector('table');
+                    if (!table) throw new Error('입고 목록 표 없음');
+                    const ths = Array.from(table.querySelectorAll('thead th')).map(t => (t.textContent || '').replace(/\s+/g, ''));
+                    let iLoc = ths.findIndex(t => /^LOCATION/i.test(t)); if (iLoc < 0) iLoc = 2;
+                    let iJan = ths.findIndex(t => /^JANCODE/i.test(t)); if (iJan < 0) iJan = 3;
+                    let iPo = ths.findIndex(t => /발주번호|発注番号|発注書番号/.test(t)); if (iPo < 0) iPo = 10;
+                    const recs = [];
+                    table.querySelectorAll('tbody tr').forEach(tr => {
+                        const cells = tr.cells;
+                        if (!cells || cells.length <= Math.max(iLoc, iJan, iPo)) return;
+                        const j = (cells[iJan].textContent || '').replace(/\s+/g, '').toUpperCase();
+                        if (j !== jan) return;
+                        recs.push({ loc: normLoc(cells[iLoc].textContent), po: (cells[iPo].textContent || '').replace(/\s+/g, '').toUpperCase() });
+                    });
+                    return recs;
+                } catch (e) {
+                    console.warn('[세트입고] 입고 기록 읽기 실패', jan, e);
+                    return null;
+                }
+            })();
+            recCache[jan] = { at: Date.now(), promise: promise };
+            return promise;
+        }
+        // locs: 출고 상품의 로케이션 이름 목록
+        async function unitOf(jan, locs, marks) {
+            const set = marks && marks[jan];
+            if (!set || !set.size) return 'piece';
+            const recs = await recsOf(jan);
+            if (!recs) return 'unknown';
+            const ln = (locs || []).map(normLoc).filter(x => x && x !== '未指定');
+            const at = recs.filter(r => ln.indexOf(r.loc) >= 0);
+            if (!at.length) return 'unknown';
+            const n = at.filter(r => set.has(r.po)).length;
+            return n === at.length ? 'set' : (n === 0 ? 'piece' : 'unknown');
+        }
+        return { splitRows: splitRows, unitOf: unitOf, normLoc: normLoc };
+    })();
+
 
     function refresh(force) {
         if (loading) return loading;
@@ -2271,18 +2352,14 @@
                 const text = await res.text();
                 if (/^\s*</.test(text)) throw new Error('シート共有設定を確認');
                 const rows = parseCsv(text);
-                const m = {};
                 // 탭이 없으면 구글이 첫 번째 탭을 대신 돌려줌 → 머리글로 확인
-                if (rows.length && /낱개/.test(rows[0].join(','))) {
-                    rows.slice(1).forEach(r => {
-                        const jan = setPcsKey(r[0]).replace(/\.0+$/, '');
-                        const pcs = parseInt(String(r[1] || '').replace(/[^\d]/g, ''), 10);
-                        if (jan && pcs > 1) m[jan] = pcs;
-                    });
-                }
-                map = m; loadedAt = Date.now(); loadErr = '';
+                const sp = (rows.length && /낱개/.test(rows[0].join(',')))
+                    ? SetUnit.splitRows(rows.slice(1), (x) => setPcsKey(x).replace(/\.0+$/, ''))
+                    : { map: {}, marks: {} };
+                const m = sp.map;
+                map = m; marks = sp.marks; unitCache.clear(); loadedAt = Date.now(); loadErr = '';
                 console.log('[세트낱개수] 시트 읽기 완료: ' + Object.keys(m).length + '건' + (rows.length && !/낱개/.test(rows[0].join(',')) ? ' (⚠ 세트낱개수 탭 머리글을 못 찾음)' : ''));
-                try { sessionStorage.setItem(CACHE_KEY, JSON.stringify({ map: map, at: loadedAt })); } catch (_) {}
+                try { sessionStorage.setItem(CACHE_KEY, JSON.stringify({ map: map, marks: marksToObj(marks), at: loadedAt })); } catch (_) {}
             } catch (e) {
                 loadErr = String(e.message || e);
                 console.warn('[세트낱개수] 시트 읽기 실패', e);
@@ -2303,6 +2380,11 @@
         }
         #packingItemsTbody td.tm-setpcs-cell.tm-setpcs-warn { box-shadow: inset 0 0 0 3px #c62828 !important; }
         #packingItemsTbody td.tm-setpcs-cell.tm-setpcs-warn::after { background: #c62828; }
+        #packingItemsTbody td.tm-setpcs-cell.tm-setpcs-setin { box-shadow: inset 0 0 0 3px #6a1b9a !important; }
+        #packingItemsTbody td.tm-setpcs-cell.tm-setpcs-setin::after { background: #6a1b9a; }
+        #packingItemsTbody td.tm-setpcs-cell.tm-setpcs-unk { box-shadow: inset 0 0 0 3px #e65100 !important; }
+        #packingItemsTbody td.tm-setpcs-cell.tm-setpcs-unk::after { background: #e65100; }
+        #tm-setpcs-banner .chip.setin { border-color: #6a1b9a; color: #6a1b9a; }
         #tm-setpcs-banner { border: 3px solid #1565c0; background: #e3f2fd; border-radius: 8px;
             padding: 6px 10px; margin: 0 0 8px 0; color: #0d2a4d; font-size: 13px; }
         #tm-setpcs-banner.warn { border-color: #c62828; background: #ffebee; }
@@ -2329,9 +2411,29 @@
         clone.querySelectorAll('.scan-counter-badge').forEach(b => b.remove());
         return parseInt((clone.textContent || '').replace(/[^0-9]/g, '') || '0', 10);
     }
-    function calc(jan, qty, pcs) {
-        if (/-H$/i.test(jan)) return { sets: qty, pieces: qty * pcs, rem: 0, half: true };
-        return { sets: Math.floor(qty / pcs), pieces: qty, rem: qty % pcs, half: false };
+    // [v1.10.0] 로케이션 칸에서 로케이션 이름만 (예: "K2-2-3 : 45個" → K2-2-3)
+    function rowLocs(row) {
+        const cell = row.cells[8];
+        if (!cell) return [];
+        return (cell.innerText || '').split(/\n+/).map(x => x.split(':')[0].trim())
+            .filter(x => /^[A-Z0-9]+(-[A-Z0-9]+)+$/i.test(x));
+    }
+    function unitOfRow(jan, row) {
+        if (!marks[jan]) return 'piece';
+        const locs = rowLocs(row);
+        const ck = jan + '|' + locs.join(',');
+        let u = unitCache.get(ck);
+        if (!u) {
+            u = 'checking';
+            unitCache.set(ck, u);
+            SetUnit.unitOf(jan, locs, marks).then(x => { unitCache.set(ck, x); render(); });
+        }
+        return u;
+    }
+    function calc(jan, qty, pcs, unit) {
+        if (pcs > 1 && /-H$/i.test(jan)) return { sets: qty, pieces: qty * pcs, rem: 0, half: true, unit: 'piece' };
+        if (unit === 'set') return { sets: qty, pieces: pcs > 1 ? qty * pcs : 0, rem: 0, half: false, unit: unit };
+        return { sets: Math.floor(qty / pcs), pieces: qty, rem: qty % pcs, half: false, unit: unit };
     }
 
     function render() {
@@ -2343,23 +2445,32 @@
             const cell = qtyCellOf(row);
             if (!cell) return;
             const jan = rowJan(row);
-            const pcs = map[jan];
-            if (!pcs || isMergedChild(row)) {
+            // [v1.9.2] SHOP 구매 줄(No. 칸 아래 "SHOP購入")은 수량이 이미 판매 단위(세트)라서 제외
+            const isShop = /SHOP/i.test(row.cells[1] ? row.cells[1].innerText : '');
+            const pcs = isShop ? 0 : (map[jan] || 0);
+            // [v1.11.0] 몇 개입 등록 또는 세트 입고 기록 중 하나라도 있으면 판단
+            const unitNow = (!isShop && !isMergedChild(row) && (pcs > 1 || marks[jan])) ? unitOfRow(jan, row) : 'none';
+            if (unitNow === 'none' || (!(pcs > 1) && unitNow === 'piece')) {
                 if (cell.classList.contains('tm-setpcs-cell')) {
-                    cell.classList.remove('tm-setpcs-cell', 'tm-setpcs-warn');
+                    cell.classList.remove('tm-setpcs-cell', 'tm-setpcs-warn', 'tm-setpcs-setin', 'tm-setpcs-unk');
                     cell.removeAttribute('data-tm-setpcs');
                 }
                 return;
             }
             const qty = rowQty(row);
-            const r = calc(jan, qty, pcs);
-            const bad = !r.half && (r.rem > 0 || r.sets === 0);
+            const r = calc(jan, qty, pcs, unitNow);
+            const unk = r.unit === 'unknown' || r.unit === 'checking';
+            const bad = !r.half && r.unit === 'piece' && (r.rem > 0 || r.sets === 0);
             const text = r.half
                 ? r.sets + 'セット\n(×' + pcs + ' = ' + r.pieces + '個)'
-                : '= ' + r.sets + 'セット' + (r.rem ? ' +' + r.rem + '個 ⚠' : '') + '\n(1セット' + pcs + '個入)';
+                : r.unit === 'set' ? 'セット' + (r.pieces ? ' (=' + r.pieces + '個)' : '') + '\n数量=セット数' + (pcs > 1 ? ' · ' + pcs + '個入' : '')
+                : unk ? (r.unit === 'checking' ? '確認中…' : '⚠ 個数?セット?') + (pcs > 1 ? '\n(1セット' + pcs + '個入)' : '\n管理者確認')
+                : '= ' + r.sets + 'セット' + (r.rem ? ' +' + r.rem + '個 ⚠' : '') + '\n数量=個数 · ' + pcs + '個入';
             if (cell.getAttribute('data-tm-setpcs') !== text) cell.setAttribute('data-tm-setpcs', text);
             if (!cell.classList.contains('tm-setpcs-cell')) cell.classList.add('tm-setpcs-cell');
             cell.classList.toggle('tm-setpcs-warn', bad);
+            cell.classList.toggle('tm-setpcs-setin', r.unit === 'set');
+            cell.classList.toggle('tm-setpcs-unk', unk);
             found.push({ jan: jan, pcs: pcs, qty: qty, r: r, bad: bad });
         });
 
@@ -2372,11 +2483,14 @@
             banner.id = 'tm-setpcs-banner';
             body.prepend(banner);
         }
-        const anyBad = found.some(f => f.bad);
-        const html = '<div class="t">🧩 セット商品 ' + found.length + '件 — 数量は「個数」です。箱の「○種類」ではなく<u>セット数</u>で確認！</div>' +
+        const anyBad = found.some(f => f.bad || f.r.unit === 'unknown');
+        const html = '<div class="t">🧩 セット商品 ' + found.length + '件 — 数量が「個数」か「セット数」か確認！</div>' +
             '<div class="chips">' + found.map(f =>
-                '<span class="chip' + (f.bad ? ' bad' : '') + '">…' + f.jan.slice(-6) + ' : ' +
-                (f.r.half ? f.qty + 'セット×' + f.pcs + '個' : f.qty + '個 = <b>' + f.r.sets + 'セット</b>' + (f.r.rem ? ' +' + f.r.rem + '個 ⚠' : '')) +
+                '<span class="chip' + (f.bad || f.r.unit === 'unknown' ? ' bad' : '') + (f.r.unit === 'set' ? ' setin' : '') + '">…' + f.jan.slice(-6) + ' : ' +
+                (f.r.half ? f.qty + 'セット×' + f.pcs + '個'
+                    : f.r.unit === 'set' ? f.qty + '<b>セット</b>' + (f.r.pieces ? ' (=' + f.r.pieces + '個)' : '')
+                    : (f.r.unit === 'unknown' || f.r.unit === 'checking') ? f.qty + ' ⚠ 個数?セット?'
+                    : f.qty + '個 = <b>' + f.r.sets + 'セット</b>' + (f.r.rem ? ' +' + f.r.rem + '個 ⚠' : '')) +
                 '</span>').join('') + '</div>' +
             (loadErr ? '<div style="color:#c62828;font-weight:700;margin-top:3px;">⚠ シート読込失敗(' + loadErr + ') — 前回の内容で表示中</div>' : '');
         banner.classList.toggle('warn', anyBad);
@@ -2384,7 +2498,7 @@
     }
 
     function start() {
-        console.log('[세트낱개수] 포장화면 세트 표시 v1.9.1 동작 중');
+        console.log('[세트낱개수] 포장화면 세트 표시 v1.10.0 동작 중');
         refresh(true);
         let wasOpen = false;
         setInterval(() => {
