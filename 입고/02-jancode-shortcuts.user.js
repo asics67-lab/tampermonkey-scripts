@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] JAN코드 화면 단축키 통합 (JAN이동 + Enter이동 + F1/F2/F3 + 합계패널 + JAN 6자리강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.5.0
+// @version      1.7.0
 // @description  jancode 페이지 통합본. 원본: A-1-9(JAN 검색이동) + A-1-6(Enter 행이동) + A-1-7(F3) + A-1-8(F1) + A-1-10(F2). v1.5.0: 입고 창에 세트상품 "1セット個数(1세트 낱개수)" 등록 칸 추가 → 구글시트 '세트낱개수' 탭에 저장, 피킹리스트·포장화면에 세트수로 표시됨
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/store/jancode*
@@ -70,6 +70,17 @@
  * - 0 을 입력하면 등록을 지웁니다. 버튼은 입력칸이 아니라서 Enter 이동(블록 2)·합계(블록 6)에 영향 없음.
  * - 저장용 웹 앱 주소는 입고 PC마다 처음 한 번만 물어보고 그 PC에 기억합니다(공개 GitHub에 안 올라감).
  *   주소를 바꾸려면 표 머리글 "セット個数" 옆 ⚙ 를 누르세요.
+ *
+ * [v1.6.0 변경 사항] "같은 상품이라도 도매처·고객 발주에 따라 세트 단위로 들어오는 경우가 있다"
+ * - 기본은 낱개 입고. 세트 단위로 들어온 경우에만 등록된 상품 줄의 [セット入庫] 를 눌러 켭니다.
+ * - 켜면 "발주번호 + 잔코드" 로 시트에 기록(잔코드 칸에 S발주번호-잔코드 형식, 낱개수 칸에 1세트 낱개수).
+ *   피킹리스트·포장·태블릿은 출고 상품의 로케이션으로 그 발주를 찾아 "数量=セット数"(보라)로 표시합니다.
+ * - 세트 입고로 켜진 줄은 "세트 배수 아님" 경고 대신 "= ○セット (○個)" 를 표시합니다.
+ *
+ * [v1.7.0 변경 사항] "몇 개입 입력과 세트 단위 입고 체크는 따로"
+ * - [セット入庫] 체크는 모든 상품 줄에 표시(기본 낱개 → 세트 단위로 들어온 발주만 체크). 몇 개입을 몰라도 체크 가능
+ * - [＋ 몇개입] 은 겉면만으로 개수를 알기 어려운 상품만 선택해서 입력 (잔코드 단위, 한 번 입력하면 계속 적용)
+ * - 몇 개입 없이 세트 입고만 체크한 기록은 시트 낱개수 칸에 2가 들어가지만 의미 없는 값(표시용 아님)
  */
 
 (function() {
@@ -607,6 +618,12 @@
             .tm-setpcs-btn.set { border: 2px solid #1565c0; background: #1565c0; color: #fff; font-size: 13px; }
             .tm-setpcs-btn.busy { border-color: #fbc02d; background: #fff9c4; color: #5d4037; }
             .tm-setpcs-btn.err { border-color: #c62828; background: #ffebee; color: #c62828; }
+            .tm-setunit-btn { display: block; margin: 0 auto 4px; border: 1.5px solid #b0bec5; background: #fff; color: #607d8b;
+                border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+            .tm-setunit-btn.on { border-color: #6a1b9a; background: #6a1b9a; color: #fff; }
+            .tm-setunit-btn.busy { border-color: #fbc02d; background: #fff9c4; color: #5d4037; }
+            .tm-setunit-btn.err { border-color: #c62828; background: #ffebee; color: #c62828; }
+            #scan-tbody tr.tm-setin-row td { background: #f3e5f5 !important; }
             .tm-setpcs-note { font-size: 11px; font-weight: 800; margin-top: 2px; line-height: 1.2; }
             .tm-setpcs-note.ok { color: #2e7d32; }
             .tm-setpcs-note.bad { color: #fff; background: #c62828; border-radius: 3px; padding: 1px 3px; }
@@ -630,6 +647,19 @@
         /* ---------- 줄 정보 읽기 ---------- */
         const rowJan = (tr) => setPcsKey(tr.getAttribute('data-jancode'));
         const rowQty = (tr) => { const q = tr.querySelector('input.quantity'); return q ? (parseInt(q.value, 10) || 0) : 0; };
+        // [v1.6.0] 줄의 발주번호: "発注番号 / JANコード" 칸의 첫 줄 (없으면 위쪽 発注書番号 입력칸)
+        function rowPo(tr) {
+            const jan = rowJan(tr);
+            for (const td of Array.from(tr.cells)) {
+                if (td.classList.contains('tm-setpcs-td') || td.querySelector('input, select, button')) continue;
+                const lines = (td.innerText || '').split(/\n+/).map(x => x.replace(/\s+/g, '').toUpperCase()).filter(Boolean);
+                if (lines.length >= 2 && lines.slice(1).join('').indexOf(jan) >= 0 && /^[0-9A-Z]{4,20}$/.test(lines[0]) && lines[0] !== jan) return lines[0];
+            }
+            const top = document.getElementById('scan_purchase_no');
+            const v = top ? String(top.value || '').replace(/\s+/g, '').toUpperCase() : '';
+            return /^[0-9A-Z]{4,20}$/.test(v) ? v : '';
+        }
+        const markKey = (po, jan) => 'S' + po + '-' + jan;   // 시트 잔코드 칸에 쓰는 세트 입고 표시
         function rowName(tr) {
             // 입력칸·우리 칸을 뺀 칸 중에서 숫자만이 아닌 가장 긴 글자 = 상품명(기록용)
             let best = '';
@@ -648,7 +678,7 @@
             if (!htr || htr.querySelector('th.tm-setpcs-th')) return;
             const th = document.createElement('th');
             th.className = 'tm-setpcs-th';
-            th.innerHTML = 'セット個数<span class="tm-setpcs-gear" title="저장 주소 다시 입력">⚙</span>';
+            th.innerHTML = 'セット入庫<br>個数<span class="tm-setpcs-gear" title="저장 주소 다시 입력">⚙</span>';
             htr.appendChild(th);
         }
 
@@ -666,30 +696,50 @@
                 if (!td) {
                     td = document.createElement('td');
                     td.className = 'tm-setpcs-td';
-                    td.innerHTML = '<button type="button" class="tm-setpcs-btn" tabindex="-1"></button><div class="tm-setpcs-note"></div>';
+                    td.innerHTML = '<button type="button" class="tm-setunit-btn" tabindex="-1" style="display:none"></button><button type="button" class="tm-setpcs-btn" tabindex="-1"></button><div class="tm-setpcs-note"></div>';
                     tr.appendChild(td);
                 }
                 const btn = td.querySelector('.tm-setpcs-btn');
                 const note = td.querySelector('.tm-setpcs-note');
+                const ubtn = td.querySelector('.tm-setunit-btn');
+                const po = rowPo(tr);
+                const mk = po ? markKey(po, jan) : '';
+                const mp = mk ? pending[mk] : null;
+                const isSetIn = mk ? (mp && mp.state === 'saving' ? mp.pcs > 1 : !!cache.map[mk]) : false;
                 const p = pending[jan];
                 const entry = cache.map[jan];
                 const pcs = p && p.state === 'saving' ? p.pcs : (entry ? entry.pcs : 0);
                 const half = /-H$/i.test(jan);
 
-                let cls = 'tm-setpcs-btn', label = '＋ 등록', noteCls = 'tm-setpcs-note', noteTxt = '';
+                let cls = 'tm-setpcs-btn', label = '＋ 몇개입', noteCls = 'tm-setpcs-note', noteTxt = '';
                 if (p && p.state === 'saving') { cls += ' busy'; label = '저장중… ' + (p.pcs > 1 ? p.pcs + '個' : '삭제'); }
                 else if (p && p.state === 'error') { cls += ' err'; label = '⚠ 저장실패 (다시)'; noteTxt = p.msg || ''; noteCls += ' bad'; }
                 else if (p && p.state === 'unverified') { cls += ' busy'; label = '⏳ ' + (p.pcs > 1 ? p.pcs + '個' : '삭제') + ' 확인중'; noteTxt = '잠시 후 자동 확인'; }
                 else if (pcs > 1) {
                     cls += ' set'; label = pcs + '個/セット ✎';
                     const qty = rowQty(tr);
-                    if (qty > 0 && !half) {
+                    if (isSetIn) {
+                        noteCls += ' ok'; noteTxt = qty > 0 ? '= ' + qty + 'セット (' + (qty * pcs) + '個)' : '';
+                    } else if (qty > 0 && !half) {
                         if (qty % pcs === 0) { noteCls += ' ok'; noteTxt = '= ' + (qty / pcs) + 'セット'; }
                         else { noteCls += ' bad'; noteTxt = '⚠ 세트 배수 아님 (' + Math.floor(qty / pcs) + 'セット+' + (qty % pcs) + '個)'; }
                     } else if (qty > 0 && half) {
                         noteCls += ' ok'; noteTxt = '= ' + (qty * pcs) + '個 (ハーフ)';
                     }
-                } else if (looksLikeSet(rowName(tr))) cls += ' hint';
+                } else {
+                    // [v1.7.0] 몇 개입 없이 세트 입고만 체크한 줄
+                    if (isSetIn) { const qty = rowQty(tr); noteCls += ' ok'; noteTxt = qty > 0 ? '= ' + qty + 'セット' : ''; }
+                    if (looksLikeSet(rowName(tr))) cls += ' hint';
+                }
+
+                // [v1.7.0] 세트 입고 체크: 모든 줄 (기본 = 낱개, -H 제외)
+                const showU = !half;
+                const ucls = 'tm-setunit-btn' + (isSetIn ? ' on' : '') + (mp && mp.state !== 'saving' && mp.state ? ' err' : '') + (mp && mp.state === 'saving' ? ' busy' : '');
+                const ulabel = mp && mp.state === 'saving' ? '저장중…' : (mp && mp.state === 'error' ? '⚠ 다시' : (isSetIn ? '✔ セット入庫' : '□ セット入庫'));
+                if (ubtn.style.display !== (showU ? '' : 'none')) ubtn.style.display = showU ? '' : 'none';
+                if (ubtn.className !== ucls) ubtn.className = ucls;
+                if (ubtn.textContent !== ulabel) ubtn.textContent = ulabel;
+                if (tr.classList.contains('tm-setin-row') !== isSetIn) tr.classList.toggle('tm-setin-row', isSetIn);
 
                 if (btn.className !== cls) btn.className = cls;
                 if (btn.textContent !== label) btn.textContent = label;
@@ -736,7 +786,8 @@
                     if (pcs > 1) cache.map[jan] = { pcs: pcs, name: name }; else delete cache.map[jan];
                     delete pending[jan];
                     render();
-                    toast(pcs > 1 ? '✅ ' + jan.slice(-6) + ' : 1セット ' + pcs + '個 등록' : '🗑 ' + jan.slice(-6) + ' 등록 삭제', pcs > 1 ? '#2e7d32' : '#546e7a');
+                    if (/^S[0-9A-Z]+-/.test(jan)) toast(pcs > 1 ? '✅ ' + jan.slice(-6) + ' : 세트 단위 입고로 기록' : '↩ ' + jan.slice(-6) + ' : 낱개 입고로 되돌림', pcs > 1 ? '#6a1b9a' : '#546e7a');
+                    else toast(pcs > 1 ? '✅ ' + jan.slice(-6) + ' : 1セット ' + pcs + '個 등록' : '🗑 ' + jan.slice(-6) + ' 등록 삭제', pcs > 1 ? '#2e7d32' : '#546e7a');
                     return;
                 }
                 pending[jan] = { pcs: pcs, state: 'error', msg: (j && j.error) || '저장 실패' };
@@ -774,6 +825,29 @@
         document.addEventListener('click', function(e) {
             const gear = e.target.closest && e.target.closest('th.tm-setpcs-th .tm-setpcs-gear');
             if (gear) { e.preventDefault(); getUrl(true); return; }
+            // [v1.6.0] 세트 입고 토글
+            const ub = e.target.closest && e.target.closest('.tm-setunit-btn');
+            if (ub) {
+                e.preventDefault(); e.stopPropagation();
+                const utr = ub.closest('tr');
+                const ujan = utr ? rowJan(utr) : '';
+                const pcs = ujan && cache.map[ujan] ? cache.map[ujan].pcs : 0;
+                if (!ujan) return;
+                const po = rowPo(utr);
+                if (!po) { alert('이 줄의 발주번호를 찾지 못했습니다. 위쪽 発注書番号 칸을 확인해 주세요.'); return; }
+                const mk = markKey(po, ujan);
+                if (pending[mk] && pending[mk].state === 'saving') return;
+                const on = !!cache.map[mk];
+                const qty = rowQty(utr);
+                if (!on && !confirm('[세트 단위 입고]\n발주번호 ' + po + ' / ' + ujan + '\n\n이번 입고 수량 ' + qty + ' 은(는) "세트 수" 입니까?' +
+                    (pcs > 1 ? '\n(1세트 ' + pcs + '개입 → 실제 ' + (qty * pcs) + '개)' : '\n(몇 개입은 필요하면 아래 [＋ 몇개입]으로 따로 입력)') +
+                    '\n\n확인 = 세트 단위로 기록')) return;
+                const locEl = document.getElementById('scan_location');
+                const loc = locEl ? String(locEl.value || '').trim() : '';
+                // 세트 입고 표시 줄의 낱개수 칸은 의미 없음(몇 개입 모르면 2 저장 — 시트가 1 이하를 삭제로 보기 때문)
+                save(mk, on ? 0 : (pcs > 1 ? pcs : 2), '세트입고 ' + (loc ? loc + ' / ' : '') + rowName(utr));
+                return;
+            }
             const btn = e.target.closest && e.target.closest('.tm-setpcs-btn');
             if (!btn) return;
             e.preventDefault();
