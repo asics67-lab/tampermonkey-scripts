@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [피킹] 태블릿 피킹 (タブレットピッキング)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.15.0
+// @version      1.17.0
 // @description  피킹리스트를 인쇄하지 않고 태블릿에서 바로 보면서 피킹. 출고건 선택 → 로케이션 순서로 합친 피킹 화면 → 탭/JAN 스캔으로 체크 → 완료 후 출고건별 仕分けリスト 인쇄.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
@@ -125,6 +125,17 @@
  *  - 위쪽 [📋 전체 목록] 버튼 → 종이 피킹리스트처럼 모든 출고건·상품을 한 화면에 표시
  *  - 피킹 끝난 줄은 ✓ 체크 + 회색, 일부만 한 줄은 노란색(◐), 남은 줄은 □
  *  - [전체] / [남은 것만] 전환, 줄을 누르면 그 상품 카드로, 출고건 제목을 누르면 그 출고건으로 이동
+ *
+ *  v1.17.0 (2026-10-22) — 몇 개입 등록과 세트 입고 체크를 따로
+ *  - 몇 개입 없이 세트 입고만 체크된 발주도 보라 "세트 · 수량=세트 수"로 표시. 둘 다 있으면 "(=n개, 1세트 m개입)"까지
+ *
+ *  v1.16.0 (2026-10-22) — 낱개 입고 / 세트 입고 구분
+ *  - 입고 화면 [セット入庫]로 세트 단위 입고된 발주(시트 "S발주번호-잔코드")를 로케이션으로 찾아서
+ *    낱개 = 파랑 "= n세트 · 수량=낱개", 세트 = 보라 "세트 (=n개) · 수량=세트 수", 판단 불가 = 주황 "⚠ 낱개? 세트?"
+ *
+ *  v1.15.1 (2026-10-22)
+ *  - 세트 낱개수 계산을 구매대행(section=purchase) 줄에만 적용. SHOP 구매 줄은 수량이 이미 판매 단위(세트)라서 제외
+ *    (예: 4570117930522 10개입은 SHOP 구매로 1세트 단위 입고·출고)
  *
  *  v1.15.0 (2026-10-21) — 세트 낱개수 표시 (입고 때 등록)
  *  - 요청: "겉면 8종류인데 실제 16개 든 세트상품을 2세트로 착각해 출고한다" → 피킹리스트·포장화면과 같은 기능을 태블릿에도
@@ -353,6 +364,7 @@
                 jan: jan,
                 name: (brand && title.toUpperCase().indexOf(brand.toUpperCase()) < 0 ? brand + ' ' : '') + title,
                 isSetName: /SET|セット|세트/i.test(title),
+                section: String(it.section || ''),   // [v1.15.1] purchase=구매대행(낱개) / shop=SHOP구매(판매 단위)
                 option: option,
                 pcs: si.pcs, unit: si.unit, pset: si.pset, sets: si.sets,
                 isHalf: isHalf,
@@ -479,7 +491,7 @@
                     loc: firstLoc(it), locs: it.locs,
                     jan: it.jan, janN: normJan(it.jan), janBase: base,
                     name: it.name, option: it.option, pcs: it.pcs, isHalf: it.isHalf, img: it.img,
-                    unit: it.unit || '', pset: it.pset || 0, sets: it.sets || 0, isSetName: !!it.isSetName,
+                    unit: it.unit || '', pset: it.pset || 0, sets: it.sets || 0, isSetName: !!it.isSetName, section: it.section || '',
                     tracking: it.tracking, total: it.qty,
                     alloc: [{ oi: oi, qty: it.qty, tracking: it.tracking }],
                     isKuji: kuji, isMain: main, isSub: sub, setDiv: sm ? parseInt(sm[1], 10) : 0
@@ -559,7 +571,74 @@
     // ===== [v1.15.0] 세트 낱개수 (입고 담당자가 입고 화면에서 등록, 시트 '세트낱개수' 탭) =====
     const SETPCS_CSV_URL = 'https://docs.google.com/spreadsheets/d/' + KUJI_SHEET_ID + '/gviz/tq?tqx=out:csv&headers=1&sheet=' + encodeURIComponent('세트낱개수');
     const setPcsKey = (j) => String(j || '').replace(/\s+/g, '').toUpperCase();
-    let setPcsSheet = { map: {}, error: '', at: 0, loading: null };
+    let setPcsSheet = { map: {}, marks: {}, error: '', at: 0, loading: null };
+    /* [세트 입고 판단] 시트 '세트낱개수' 탭의 "S발주번호-잔코드" 줄 = 그 발주는 세트 단위로 입고됨 (입고 화면 [セット入庫])
+     *  - 그 잔코드에 세트 입고 기록이 없으면: 낱개(piece)
+     *  - 있으면: 입고 처리 목록(JAN코드)에서 그 잔코드의 입고 기록(로케이션·발주번호)을 읽어
+     *    출고 상품의 로케이션에 있는 발주가 전부 세트 입고면 set, 전부 아니면 piece, 섞였거나 못 찾으면 unknown */
+    const SetUnit = (function () {
+        const recCache = {};
+        const normLoc = (x) => String(x || '').replace(/\s*:\s*\d+\s*(個|개)\s*$/, '').replace(/\s+/g, '').toUpperCase();
+        function splitRows(rows, keyFn) {
+            const map = {}, marks = {};
+            rows.forEach(r => {
+                const key = keyFn(r[0]);
+                const pcs = parseInt(String(r[1] || '').replace(/[^\d]/g, ''), 10);
+                if (!key || !(pcs > 1)) return;
+                const m = key.match(/^S([0-9A-Z]+)-(.+)$/);
+                if (m) (marks[m[2]] = marks[m[2]] || new Set()).add(m[1]);
+                else map[key] = pcs;
+            });
+            return { map: map, marks: marks };
+        }
+        async function recsOf(jan) {
+            const c = recCache[jan];
+            if (c && Date.now() - c.at < 60 * 1000) return c.promise;
+            const promise = (async () => {
+                try {
+                    const url = location.origin + '/admin/store/jancode?pagesize=200&target=2&start=2025-01-01&keyword=' + encodeURIComponent(jan);
+                    const res = await fetch(url, { credentials: 'include' });
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    const d = new DOMParser().parseFromString(await res.text(), 'text/html');
+                    const table = d.querySelector('.content-wrapper table') || d.querySelector('table');
+                    if (!table) throw new Error('입고 목록 표 없음');
+                    const ths = Array.from(table.querySelectorAll('thead th')).map(t => (t.textContent || '').replace(/\s+/g, ''));
+                    let iLoc = ths.findIndex(t => /^LOCATION/i.test(t)); if (iLoc < 0) iLoc = 2;
+                    let iJan = ths.findIndex(t => /^JANCODE/i.test(t)); if (iJan < 0) iJan = 3;
+                    let iPo = ths.findIndex(t => /발주번호|発注番号|発注書番号/.test(t)); if (iPo < 0) iPo = 10;
+                    const recs = [];
+                    table.querySelectorAll('tbody tr').forEach(tr => {
+                        const cells = tr.cells;
+                        if (!cells || cells.length <= Math.max(iLoc, iJan, iPo)) return;
+                        const j = (cells[iJan].textContent || '').replace(/\s+/g, '').toUpperCase();
+                        if (j !== jan) return;
+                        recs.push({ loc: normLoc(cells[iLoc].textContent), po: (cells[iPo].textContent || '').replace(/\s+/g, '').toUpperCase() });
+                    });
+                    return recs;
+                } catch (e) {
+                    console.warn('[세트입고] 입고 기록 읽기 실패', jan, e);
+                    return null;
+                }
+            })();
+            recCache[jan] = { at: Date.now(), promise: promise };
+            return promise;
+        }
+        // locs: 출고 상품의 로케이션 이름 목록
+        async function unitOf(jan, locs, marks) {
+            const set = marks && marks[jan];
+            if (!set || !set.size) return 'piece';
+            const recs = await recsOf(jan);
+            if (!recs) return 'unknown';
+            const ln = (locs || []).map(normLoc).filter(x => x && x !== '未指定');
+            const at = recs.filter(r => ln.indexOf(r.loc) >= 0);
+            if (!at.length) return 'unknown';
+            const n = at.filter(r => set.has(r.po)).length;
+            return n === at.length ? 'set' : (n === 0 ? 'piece' : 'unknown');
+        }
+        return { splitRows: splitRows, unitOf: unitOf, normLoc: normLoc };
+    })();
+
+    const unitCache = new Map();   // [v1.16.0] 'jan|로케이션들' → piece / set / unknown / checking
     function refreshSetPcs(force) {
         if (setPcsSheet.loading) return setPcsSheet.loading;
         if (!force && setPcsSheet.at && Date.now() - setPcsSheet.at < 60 * 1000) return Promise.resolve();
@@ -570,20 +649,16 @@
             .then(text => {
                 if (/^\s*</.test(text)) throw new Error('시트 공유 설정 확인 필요');
                 const rows = parseCsv(text);
-                const map = {};
                 // 탭이 없으면 구글이 첫 번째 탭을 대신 돌려줌 → 머리글로 확인
-                if (rows.length && /낱개/.test(rows[0].join(','))) {
-                    rows.slice(1).forEach(r => {
-                        const jan = setPcsKey(r[0]).replace(/\.0+$/, '');
-                        const pcs = parseInt(String(r[1] || '').replace(/[^\d]/g, ''), 10);
-                        if (jan && pcs > 1) map[jan] = pcs;
-                    });
-                }
-                setPcsSheet = { map: map, error: '', at: Date.now(), loading: null };
+                const sp = (rows.length && /낱개/.test(rows[0].join(',')))
+                    ? SetUnit.splitRows(rows.slice(1), (x) => setPcsKey(x).replace(/\.0+$/, ''))
+                    : { map: {}, marks: {} };
+                setPcsSheet = { map: sp.map, marks: sp.marks, error: '', at: Date.now(), loading: null };
+                unitCache.clear();
             })
             .catch(e => {
                 console.warn('[태블릿피킹] 세트낱개수 시트 읽기 실패', e);
-                setPcsSheet = { map: setPcsSheet.map, error: (e && e.name === 'AbortError') ? '응답 없음' : String(e.message || e), at: Date.now(), loading: null };
+                setPcsSheet = { map: setPcsSheet.map, marks: setPcsSheet.marks, error: (e && e.name === 'AbortError') ? '응답 없음' : String(e.message || e), at: Date.now(), loading: null };
             })
             .finally(() => { clearTimeout(timer); if (PK) render(); });
         return setPcsSheet.loading;
@@ -591,10 +666,28 @@
     // 줄 하나의 세트 계산 (등록 안 됐거나 쿠지면 null)
     function setPcsOf(l) {
         if (!l || l.isTrk || l.isKuji) return null;
-        const pcs = setPcsSheet.map[setPcsKey(l.jan)];
-        if (!(pcs > 1)) return null;
-        if (/-H$/i.test(String(l.jan))) return { pcs: pcs, half: true, sets: l.total, pieces: l.total * pcs, rem: 0 };
-        return { pcs: pcs, half: false, sets: Math.floor(l.total / pcs), pieces: l.total, rem: l.total % pcs };
+        if (l.section === 'shop') return null;   // [v1.15.1] SHOP 구매는 수량이 이미 세트(판매 단위)
+        const jan = setPcsKey(l.jan);
+        const pcs = setPcsSheet.map[jan] || 0;
+        const hasMark = !!(setPcsSheet.marks && setPcsSheet.marks[jan]);
+        if (!(pcs > 1) && !hasMark) return null;   // [v1.17.0] 몇 개입 등록 또는 세트 입고 기록 중 하나라도 있으면
+        if (pcs > 1 && /-H$/i.test(String(l.jan))) return { pcs: pcs, half: true, unit: 'piece', sets: l.total, pieces: l.total * pcs, rem: 0 };
+        // [v1.16.0] 입고 단위: 세트 입고 기록이 있는 잔코드만 로케이션으로 발주를 찾아 판단
+        const locs = (l.locs || []).map(x => x.name);
+        const ck = jan + '|' + locs.join(',');
+        let unit = unitCache.get(ck);
+        if (!unit) {
+            const mk = setPcsSheet.marks || {};
+            if (!mk[jan]) unit = 'piece';
+            else {
+                unit = 'checking';
+                SetUnit.unitOf(jan, locs, mk).then(u => { unitCache.set(ck, u); if (PK) render(); });
+            }
+            unitCache.set(ck, unit);
+        }
+        if (!(pcs > 1) && unit === 'piece') return null;   // 몇 개입 없이 낱개 입고 → 표시 없음
+        if (unit === 'set') return { pcs: pcs, half: false, unit: unit, sets: l.total, pieces: pcs > 1 ? l.total * pcs : 0, rem: 0 };
+        return { pcs: pcs, half: false, unit: unit, sets: Math.floor(l.total / pcs), pieces: l.total, rem: l.total % pcs };
     }
     // 출고건 하나: 메인 잔코드가 없는 쿠지 묶음별 세트 계산
     function kujiInfoFor(b, oi) {
@@ -922,6 +1015,10 @@
     #tmtp .qty .st{font-size:15px;font-weight:900;color:#ff3e1d;margin-top:2px}
     #tmtp .qty .pc{font-size:13px;font-weight:900;color:#1565c0;margin-top:2px;text-align:center}
     #tmtp .qty .sp{font-size:20px;font-weight:900;color:#fff;background:#1565c0;border-radius:6px;padding:1px 6px;margin-top:3px;white-space:nowrap}
+    #tmtp .qty .sp.setin{background:#6a1b9a}
+    #tmtp .qty .sp.unk{background:#e65100;font-size:15px}
+    #tmtp .card.setin{background:#f3e5f5}
+    #tmtp .card.unk{background:#fff3e0}
     #tmtp .qty .spw{font-size:12px;font-weight:900;color:#fff;background:#c62828;border-radius:4px;padding:1px 4px;margin-top:2px}
     #tmtp .qty .warn{font-size:12px;font-weight:900;color:#fff;background:#e69500;border-radius:4px;padding:1px 4px;margin-top:2px}
     #tmtp .lcs{width:150px;flex:none;display:flex;flex-direction:column;align-items:center;justify-content:center;border-left:1px solid #e2e8f0;padding:4px;text-align:center;font-size:17px;font-weight:900;line-height:1.3;word-break:break-all}
@@ -1284,11 +1381,13 @@
             const sp = setPcsOf(l);
             if (sp) {
                 // [v1.15.0] 입고 때 등록한 1세트 낱개수
-                qtyExtra += sp.half
-                    ? `<div class="sp">${sp.sets}세트</div><div class="pc">× ${sp.pcs}개입<br>= 총 ${sp.pieces}개</div>`
-                    : `<div class="sp">= ${sp.sets}세트</div><div class="pc">(1세트 ${sp.pcs}개입)</div>` +
+                // [v1.16.0] 낱개 입고 = 파랑 "수량=낱개", 세트 입고 = 보라 "수량=세트", 확인 필요 = 주황
+                if (sp.half) qtyExtra += `<div class="sp">${sp.sets}세트</div><div class="pc">× ${sp.pcs}개입<br>= 총 ${sp.pieces}개</div>`;
+                else if (sp.unit === 'set') qtyExtra += `<div class="sp setin">세트${sp.pieces ? ` (=${sp.pieces}개)` : ''}</div><div class="pc">수량=세트 수${sp.pcs > 1 ? ` · 1세트 ${sp.pcs}개입` : ''}</div>`;
+                else if (sp.unit === 'unknown' || sp.unit === 'checking') qtyExtra += `<div class="sp unk">${sp.unit === 'checking' ? '확인 중…' : '⚠ 낱개? 세트?'}</div><div class="pc">${sp.pcs > 1 ? `1세트 ${sp.pcs}개입 · ` : ''}관리자 확인</div>`;
+                else qtyExtra += `<div class="sp">= ${sp.sets}세트</div><div class="pc">수량=낱개 · 1세트 ${sp.pcs}개입</div>` +
                       (sp.rem || !sp.sets ? `<div class="spw">⚠ ${sp.sets ? '나머지 ' + sp.rem + '개' : '1세트 미만'}</div>` : '');
-                rowCls = ' half';
+                rowCls = sp.unit === 'set' ? ' setin' : (sp.unit === 'unknown' || sp.unit === 'checking' ? ' unk' : ' half');
             } else if (l.pset > 0 && !l.isKuji) {
                 qtyExtra += `<div class="pc">${l.pset}P SET${l.sets ? `<br>× ${l.sets}세트` : ''}</div>`; rowCls = ' half';
             } else if (l.pcs > 0 && (l.isHalf || !l.isKuji)) {
@@ -1351,6 +1450,8 @@
         const sp = setPcsOf(l);
         if (sp) {
             if (sp.half) t.push(sp.sets + '세트 × ' + sp.pcs + '개입 = ' + sp.pieces + '개');
+            else if (sp.unit === 'set') t.push('수량=세트 수' + (sp.pcs > 1 ? ' (= ' + sp.pieces + '개, 1세트 ' + sp.pcs + '개입)' : ''));
+            else if (sp.unit === 'unknown' || sp.unit === 'checking') { t.push('⚠ 낱개? 세트? 확인' + (sp.pcs > 1 ? ' (1세트 ' + sp.pcs + '개입)' : '')); warn = true; }
             else { t.push('= ' + sp.sets + '세트 (1세트 ' + sp.pcs + '개입)' + (sp.rem ? ' ⚠ 나머지 ' + sp.rem + '개' : '')); if (sp.rem || !sp.sets) warn = true; }
         } else if (l.pset > 0 && !l.isKuji) t.push(l.pset + 'P SET' + (l.sets ? ' × ' + l.sets + '세트' : ''));
         else if (l.pcs > 0 && (l.isHalf || !l.isKuji)) t.push(l.total + (l.unit || '세트') + ' × ' + l.pcs + '개입 = ' + (l.total * l.pcs) + '개');
