@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [포장] 포장출고 통합 도구 (회원사메모 + 에토와르매칭 + LH/OH중복알림 + 오션배너 + 무검품출하알림)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.5.1
+// @version      1.5.2
 // @description  포장/출고(shipping/packing) 화면 통합본. 원본: 회원사 특이사항(메모) 공유 시스템 v4.7 + 에토와르 주소 매칭 v21.0 + LH/OH Tracking 중복 알림 v1.4.0 + 포장 오션 강조 배너 v1.1 + 무검품출하 Tracking 알림 v1.0
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
@@ -74,6 +74,12 @@
  *  - [블록 5] 팝업·배너·행 배지는 무검품출하 Tracking이 "다른 출고요청에도 들어가 있을 때(중복)"만
  *    표시합니다. 중복 없는 일반 무검품출하 출고건에서는 아무것도 뜨지 않습니다
  *    (사이트 원래의 "무검품 출하" 표시는 그대로 나옵니다).
+ *
+ *  v1.5.2 버그 수정 (보고: "츄플레이 1957인데 몽글데이 특이사항 [126]으로 뜬다")
+ *  - [블록 1] 회원번호를 행 전체 텍스트에서 "처음 나오는 3~5자리 숫자"로 찾다 보니,
+ *    맨 앞 No. 칸(행 번호)이 100 이상이 되면 행 번호(예: 126)를 회원번호로 잘못 읽었습니다.
+ *    (1~99번 행은 2자리라 걸러져서 그동안 문제가 안 보였음)
+ *    → 회원번호를 찾을 때 맨 앞 No. 칸은 빼고 읽도록 고쳤습니다.
  * ============================================================
  */
 
@@ -110,9 +116,10 @@
 
             $(document).on('click', '.packing-btn', function() {
 
-                const $parentRow = $(this).parent().parent();
-                const fallbackText = $(this).closest('tr').text() || '';
-                const combinedText = $parentRow.text() + " " + fallbackText;
+                // [v1.5.2] 맨 앞 No.(행 번호) 칸은 회원번호로 오인되므로 제외하고 읽음
+                const $row = $(this).closest('tr');
+                const combinedText = $row.children('td').slice(1)
+                    .map(function() { return $(this).text(); }).get().join(' ');
 
                 let numList = extractActualUserNumber(combinedText);
 
