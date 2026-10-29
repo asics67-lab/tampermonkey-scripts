@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         [관리] 전사공통 도구 (업무채팅알람봇 + 피킹현황카운터)
+// @name         [관리] 전사공통 도구 (업무채팅알람봇 + 피킹현황카운터 + 금일입고표시)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.2.2
+// @version      1.3.0
 // @description  admin 전체 화면에서 공통으로 쓰는 도구 모음. 원본: 사내 만능 테스크 채팅 알람봇 v1.3 + 출고관리 피킹중/대기중 전체 합계 알림 v1.96
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin*
@@ -14,11 +14,9 @@
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @connect      www.platform.co.jp
-// @connect      platform.co.jp
 // @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/05-전사공통/common-tools.user.js
 // @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/05-전사공통/common-tools.user.js
 // ==/UserScript==
-// [www 없는 주소 대응] platform.co.jp(www 없이) 로 접속해도 동작하도록 @match 추가, 사이트 내부 요청 주소를 현재 접속 주소 기준(location.origin)으로 변경
 
 /*
  * ============================================================
@@ -42,6 +40,12 @@
  *  - @match가 admin 전체라서 송장/라벨 인쇄 화면(/admin/print/...)에도 [블록 2] 피킹 현황
  *    창(검은 박스)과 [블록 1] 채팅 버튼이 떠서 라벨 위에 같이 인쇄됐습니다.
  *    인쇄 화면(/admin/print/*)에서는 이 스크립트가 아예 실행되지 않도록 @exclude 추가.
+ *
+ *  v1.3.0 기능 추가
+ *  - [블록 3] 포장화면 금일 입고 Tracking 표시: 포장 진행 리스트에서 오늘 입고처리된 Tracking이
+ *    포함된 배송대행 출고건을 노란색 + "🆕 금일입고" 배지로 표시 (관리자 PC 전용, 별도 파일 대신 이 파일에 합침)
+ *    최초 1회: 패널의 [URL 설정]에 입고관리 화면 오늘날짜 검색 URL을 넣고 날짜 부분을 {TODAY}로 바꿔 저장
+ *  - www 없이 platform.co.jp로 접속해도 실행되도록 @match 추가
  * ============================================================
  */
 
@@ -80,7 +84,7 @@
         console.warn('[업무채팅 알람봇] 이름이 설정되지 않아 동작을 중단합니다.');
         return;
     }
-    const BASE_URL = location.origin + "/admin/task";
+    const BASE_URL = "https://www.platform.co.jp/admin/task";
 
     const MSG_SEPARATOR = "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
 
@@ -655,7 +659,7 @@
         const indicator = document.getElementById('sync-indicator');
         if (indicator) indicator.textContent = "갱신 중...";
 
-        const baseOriginUrl = location.origin + "/admin/shipping/packing?s_status=1";
+        const baseOriginUrl = "https://www.platform.co.jp/admin/shipping/packing?s_status=1";
 
         GM_xmlhttpRequest({
             method: "GET",
@@ -828,3 +832,228 @@
 
 })();
 
+
+/* ------------------------------------------------------------
+ * [블록 3] 포장화면 금일 입고 Tracking 표시 v1.0.0
+ * 포장 진행 리스트(TrackingNo. 칸 + 포장 진행 버튼이 있는 표)가 있는 화면에서만 동작합니다.
+ * 입고 관리(트래킹넘버) 목록을 뒤에서 조회해 오늘 입고처리된 Tracking을 찾고, 해당 출고건을 표시합니다.
+ * 설정 메뉴: Tampermonkey → "⚙ 금일입고 조회 URL 설정" (또는 패널의 [URL 설정] 버튼)
+ * ------------------------------------------------------------ */
+(function () {
+  'use strict';
+
+  /* ===== 설정 ===== */
+  // 입고 관리(트래킹넘버) 목록 URL. {TODAY} 는 오늘 날짜(YYYY-MM-DD)로 바뀜.
+  const DEFAULT_URL = '/admin/store/trackingno';
+  const MAX_PAGES = 30;          // 페이지가 여러 개일 때 최대 조회 페이지 수
+  const CACHE_MS = 5 * 60 * 1000; // 5분 동안은 다시 조회하지 않음
+
+  const getUrlTemplate = () => GM_getValue('ta_url', DEFAULT_URL);
+
+  GM_registerMenuCommand('⚙ 금일입고 조회 URL 설정', openSetting);
+
+  function openSetting() {
+    const v = prompt(
+      '입고 관리(트래킹넘버) 화면에서 "오늘 날짜"로 검색한 뒤 주소창 URL을 붙여넣으세요.\n' +
+      '날짜 부분은 {TODAY} 로 바꿔두면 매일 자동으로 오늘 날짜가 들어갑니다.\n' +
+      '예) /admin/store/trackingno?sdate={TODAY}&edate={TODAY}',
+      getUrlTemplate()
+    );
+    if (v !== null && v.trim()) {
+      GM_setValue('ta_url', v.trim());
+      cache = null;
+      run(true);
+    }
+  }
+
+  /* ===== 날짜 ===== */
+  function todayParts() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return { y, m, day, iso: `${y}-${m}-${day}` };
+  }
+  function todayPatterns() {
+    const { y, m, day } = todayParts();
+    return [`${y}-${m}-${day}`, `${y}/${m}/${day}`, `${y}.${m}.${day}`, `${y}년 ${+m}월 ${+day}일`];
+  }
+
+  /* ===== 포장 리스트 찾기 ===== */
+  function findPackingTable() {
+    for (const t of document.querySelectorAll('table')) {
+      const head = t.querySelector('thead') || t.querySelector('tr');
+      if (!head) continue;
+      const txt = head.textContent.replace(/\s+/g, '');
+      if (txt.includes('TrackingNo') && txt.includes('포장')) return t;
+    }
+    return null;
+  }
+
+  function trackingColIndex(table) {
+    const headRow = (table.querySelector('thead tr') || table.querySelector('tr'));
+    const cells = [...headRow.children];
+    return cells.findIndex(c => c.textContent.replace(/\s+/g, '').includes('TrackingNo'));
+  }
+
+  function rowTrackings(tr, colIdx) {
+    const cell = tr.children[colIdx];
+    if (!cell) return [];
+    return (cell.innerText || cell.textContent)
+      .split(/[\s,、/]+/)
+      .map(s => s.trim())
+      .filter(s => /^[A-Za-z0-9-]{8,}$/.test(s));
+  }
+
+  /* ===== 금일 입고 데이터 조회 ===== */
+  let cache = null; // { time, rowsText: [] , pages }
+
+  async function fetchDoc(url) {
+    const res = await fetch(url, { credentials: 'include' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const html = await res.text();
+    return new DOMParser().parseFromString(html, 'text/html');
+  }
+
+  function todayRowsFrom(doc) {
+    const pats = todayPatterns();
+    const out = [];
+    doc.querySelectorAll('tr').forEach(tr => {
+      const t = tr.textContent;
+      if (pats.some(p => t.includes(p))) out.push(t);
+    });
+    return out;
+  }
+
+  async function loadTodayRows(force) {
+    if (!force && cache && Date.now() - cache.time < CACHE_MS) return cache;
+    const tpl = getUrlTemplate().replace(/\{TODAY\}/g, todayParts().iso);
+    const first = new URL(tpl, location.origin);
+    const doc = await fetchDoc(first.href);
+    let rows = todayRowsFrom(doc);
+
+    // 페이지 링크(page=) 수집 후 추가 조회
+    const pageUrls = new Set();
+    doc.querySelectorAll('a[href*="page="]').forEach(a => {
+      try {
+        const u = new URL(a.getAttribute('href'), first.href);
+        if (u.pathname === first.pathname && u.href !== first.href) pageUrls.add(u.href);
+      } catch (e) { /* ignore */ }
+    });
+    const list = [...pageUrls].slice(0, MAX_PAGES);
+    for (const u of list) {
+      try {
+        const d = await fetchDoc(u);
+        const r = todayRowsFrom(d);
+        rows = rows.concat(r);
+      } catch (e) { /* 한 페이지 실패해도 계속 */ }
+    }
+    cache = { time: Date.now(), rowsText: rows, pages: 1 + list.length };
+    return cache;
+  }
+
+  /* ===== 표시 ===== */
+  let onlyToday = false;
+
+  function ensureStyle() {
+    if (document.getElementById('ta-style')) return;
+    const s = document.createElement('style');
+    s.id = 'ta-style';
+    s.textContent = `
+      tr.ta-hit > td { background: #fff4c2 !important; }
+      .ta-badge { display:inline-block; margin-top:3px; padding:1px 6px; border-radius:10px;
+        background:#e8590c; color:#fff; font-size:11px; font-weight:bold; white-space:nowrap; }
+      #ta-panel { position:fixed; top:70px; right:16px; z-index:99999; background:#fff;
+        border:2px solid #e8590c; border-radius:8px; padding:8px 10px; font-size:13px;
+        box-shadow:0 2px 8px rgba(0,0,0,.2); min-width:210px; }
+      #ta-panel b { color:#e8590c; font-size:15px; }
+      #ta-panel button { margin:6px 4px 0 0; padding:3px 8px; font-size:12px; cursor:pointer;
+        border:1px solid #ccc; border-radius:4px; background:#f8f8f8; }
+      #ta-panel button.on { background:#e8590c; color:#fff; border-color:#e8590c; }
+      #ta-panel .ta-sub { color:#888; font-size:11px; margin-top:4px; }
+    `;
+    document.head.appendChild(s);
+  }
+
+  function panel() {
+    let p = document.getElementById('ta-panel');
+    if (p) return p;
+    p = document.createElement('div');
+    p.id = 'ta-panel';
+    document.body.appendChild(p);
+    return p;
+  }
+
+  function renderPanel(hitCount, info, err) {
+    const p = panel();
+    if (err) {
+      p.innerHTML = `🆕 금일 입고 표시<br><span style="color:red">조회 실패: ${err}</span>
+        <div><button id="ta-refresh">다시 조회</button><button id="ta-set">URL 설정</button></div>`;
+    } else {
+      p.innerHTML = `🆕 금일 입고 포함 출고건: <b>${hitCount}</b>건
+        <div class="ta-sub">오늘(${todayParts().iso}) 입고 행 ${info.rowsText.length}개 · ${info.pages}페이지 조회</div>
+        <div>
+          <button id="ta-only" class="${onlyToday ? 'on' : ''}">${onlyToday ? '전체 보기' : '금일건만 보기'}</button>
+          <button id="ta-refresh">새로고침</button>
+          <button id="ta-set">URL 설정</button>
+        </div>`;
+    }
+    p.querySelector('#ta-refresh').onclick = () => run(true);
+    p.querySelector('#ta-set').onclick = openSetting;
+    const o = p.querySelector('#ta-only');
+    if (o) o.onclick = () => { onlyToday = !onlyToday; run(false); };
+  }
+
+  let busy = false;
+  async function run(force) {
+    const table = findPackingTable();
+    if (!table) { const p = document.getElementById('ta-panel'); if (p) p.remove(); return; }
+    if (busy) return;
+    busy = true;
+    ensureStyle();
+    try {
+      const info = await loadTodayRows(force);
+      const colIdx = trackingColIndex(table);
+      let hits = 0;
+      const rows = [...table.querySelectorAll('tbody tr')];
+      observer.disconnect();
+      rows.forEach(tr => {
+        tr.classList.remove('ta-hit');
+        tr.querySelectorAll('.ta-badge').forEach(b => b.remove());
+        tr.style.display = '';
+        if (colIdx < 0) return;
+        const trks = rowTrackings(tr, colIdx);
+        const hitTrk = trks.filter(t => info.rowsText.some(rt => rt.includes(t)));
+        if (hitTrk.length) {
+          hits++;
+          tr.classList.add('ta-hit');
+          const b = document.createElement('div');
+          b.className = 'ta-badge';
+          b.textContent = trks.length > 1 ? `🆕 금일입고 ${hitTrk.length}/${trks.length}` : '🆕 금일입고';
+          tr.children[colIdx].appendChild(b);
+        } else if (onlyToday) {
+          tr.style.display = 'none';
+        }
+      });
+      renderPanel(hits, info);
+    } catch (e) {
+      renderPanel(0, null, e.message);
+    } finally {
+      busy = false;
+      startObserve();
+    }
+  }
+
+  /* ===== 리스트 변경 감지 (검색·페이지 이동 등) ===== */
+  let timer = null;
+  const observer = new MutationObserver(() => {
+    clearTimeout(timer);
+    timer = setTimeout(() => run(false), 600);
+  });
+  function startObserve() {
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  run(false);
+  startObserve();
+})();
