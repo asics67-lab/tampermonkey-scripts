@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [관리] 전사공통 도구 (업무채팅알람봇 + 피킹현황카운터 + 금일입고표시)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.0
+// @version      1.3.1
 // @description  admin 전체 화면에서 공통으로 쓰는 도구 모음. 원본: 사내 만능 테스크 채팅 알람봇 v1.3 + 출고관리 피킹중/대기중 전체 합계 알림 v1.96
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin*
@@ -46,6 +46,12 @@
  *    포함된 배송대행 출고건을 노란색 + "🆕 금일입고" 배지로 표시 (관리자 PC 전용, 별도 파일 대신 이 파일에 합침)
  *    최초 1회: 패널의 [URL 설정]에 입고관리 화면 오늘날짜 검색 URL을 넣고 날짜 부분을 {TODAY}로 바꿔 저장
  *  - www 없이 platform.co.jp로 접속해도 실행되도록 @match 추가
+ *
+ *  v1.3.1 버그 수정 (보고: "오늘 입고된 건인데 금일입고 표시가 안 됨")
+ *  - 입고 목록을 날짜 조건 없이 조회해서 앞쪽 12페이지만 읽고 있었음 → 오늘 입고 건 일부 누락
+ *  - 입고처리 화면의 입고일자 검색(start/end)과 pagesize=1000으로 오늘 입고 건을 한 번에 조회하도록 변경
+ *    (URL 설정 없이 바로 동작. 예전에 저장한 URL 설정값은 무시됨)
+ *  - Tracking 번호 외에 입고 목록의 출고번호(LH...)로도 매칭
  * ============================================================
  */
 
@@ -844,11 +850,11 @@
 
   /* ===== 설정 ===== */
   // 입고 관리(트래킹넘버) 목록 URL. {TODAY} 는 오늘 날짜(YYYY-MM-DD)로 바뀜.
-  const DEFAULT_URL = '/admin/store/trackingno';
+  const DEFAULT_URL = '/admin/store/trackingno?pagesize=1000&start={TODAY}&end={TODAY}';
   const MAX_PAGES = 30;          // 페이지가 여러 개일 때 최대 조회 페이지 수
   const CACHE_MS = 5 * 60 * 1000; // 5분 동안은 다시 조회하지 않음
 
-  const getUrlTemplate = () => GM_getValue('ta_url', DEFAULT_URL);
+  const getUrlTemplate = () => GM_getValue('ta_url_v2', DEFAULT_URL);
 
   GM_registerMenuCommand('⚙ 금일입고 조회 URL 설정', openSetting);
 
@@ -856,11 +862,11 @@
     const v = prompt(
       '입고 관리(트래킹넘버) 화면에서 "오늘 날짜"로 검색한 뒤 주소창 URL을 붙여넣으세요.\n' +
       '날짜 부분은 {TODAY} 로 바꿔두면 매일 자동으로 오늘 날짜가 들어갑니다.\n' +
-      '예) /admin/store/trackingno?sdate={TODAY}&edate={TODAY}',
+      '기본값) /admin/store/trackingno?pagesize=1000&start={TODAY}&end={TODAY}',
       getUrlTemplate()
     );
     if (v !== null && v.trim()) {
-      GM_setValue('ta_url', v.trim());
+      GM_setValue('ta_url_v2', v.trim());
       cache = null;
       run(true);
     }
@@ -1023,7 +1029,9 @@
         tr.style.display = '';
         if (colIdx < 0) return;
         const trks = rowTrackings(tr, colIdx);
+        const outNos = ((tr.innerText || tr.textContent).match(/\b[LO]H\d{8,}\b/g) || []);
         const hitTrk = trks.filter(t => info.rowsText.some(rt => rt.includes(t)));
+        if (!hitTrk.length && outNos.some(o => info.rowsText.some(rt => rt.includes(o)))) hitTrk.push(trks[0] || '출고번호');
         if (hitTrk.length) {
           hits++;
           tr.classList.add('ta-hit');
