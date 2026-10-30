@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [관리] 전사공통 도구 (업무채팅알람봇 + 피킹현황카운터 + 금일입고표시)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.3.1
+// @version      1.3.2
 // @description  admin 전체 화면에서 공통으로 쓰는 도구 모음. 원본: 사내 만능 테스크 채팅 알람봇 v1.3 + 출고관리 피킹중/대기중 전체 합계 알림 v1.96
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin*
@@ -52,6 +52,10 @@
  *  - 입고처리 화면의 입고일자 검색(start/end)과 pagesize=1000으로 오늘 입고 건을 한 번에 조회하도록 변경
  *    (URL 설정 없이 바로 동작. 예전에 저장한 URL 설정값은 무시됨)
  *  - Tracking 번호 외에 입고 목록의 출고번호(LH...)로도 매칭
+ *
+ *  v1.3.2 버그 수정 (보고: "금일 입고 표시가 깜빡거림")
+ *  - 화면이 조금만 바뀌어도(피킹현황·채팅 갱신, 다른 스크립트 등) 0.6초 뒤 표시를 전부 지우고 다시 그리던 방식
+ *    → 바뀐 행만 고치고, 화면이 그려지기 전에 즉시 반영하도록 변경. 패널도 내용이 바뀔 때만 다시 그림
  * ============================================================
  */
 
@@ -990,7 +994,11 @@
     return p;
   }
 
+  let lastPanelKey = '';
   function renderPanel(hitCount, info, err) {
+    const key = err ? 'E:' + err : `${hitCount}|${info.rowsText.length}|${info.pages}|${onlyToday}|${todayParts().iso}`;
+    if (key === lastPanelKey && document.getElementById('ta-panel')) return; // 내용이 같으면 다시 그리지 않음
+    lastPanelKey = key;
     const p = panel();
     if (err) {
       p.innerHTML = `🆕 금일 입고 표시<br><span style="color:red">조회 실패: ${err}</span>
@@ -1007,56 +1015,103 @@
     p.querySelector('#ta-refresh').onclick = () => run(true);
     p.querySelector('#ta-set').onclick = openSetting;
     const o = p.querySelector('#ta-only');
-    if (o) o.onclick = () => { onlyToday = !onlyToday; run(false); };
+    if (o) o.onclick = () => { onlyToday = !onlyToday; applyNow(); };
   }
 
-  let busy = false;
-  async function run(force) {
-    const table = findPackingTable();
-    if (!table) { const p = document.getElementById('ta-panel'); if (p) p.remove(); return; }
-    if (busy) return;
-    busy = true;
-    ensureStyle();
-    try {
-      const info = await loadTodayRows(force);
-      const colIdx = trackingColIndex(table);
-      let hits = 0;
-      const rows = [...table.querySelectorAll('tbody tr')];
-      observer.disconnect();
-      rows.forEach(tr => {
-        tr.classList.remove('ta-hit');
-        tr.querySelectorAll('.ta-badge').forEach(b => b.remove());
-        tr.style.display = '';
-        if (colIdx < 0) return;
-        const trks = rowTrackings(tr, colIdx);
-        const outNos = ((tr.innerText || tr.textContent).match(/\b[LO]H\d{8,}\b/g) || []);
-        const hitTrk = trks.filter(t => info.rowsText.some(rt => rt.includes(t)));
-        if (!hitTrk.length && outNos.some(o => info.rowsText.some(rt => rt.includes(o)))) hitTrk.push(trks[0] || '출고번호');
-        if (hitTrk.length) {
-          hits++;
-          tr.classList.add('ta-hit');
+  // 행마다 "지금 상태"와 "원하는 상태"를 비교해서, 다를 때만 화면을 고침 (깜빡임 방지)
+  function applyRows(table, info) {
+    const colIdx = trackingColIndex(table);
+    if (colIdx < 0) return 0;
+    let hits = 0;
+    // 1단계: 먼저 전부 읽기 (읽기·쓰기를 섞으면 브라우저가 매 행마다 다시 계산해서 느려짐)
+    const plan = [];
+    table.querySelectorAll('tbody tr').forEach(tr => {
+      const cell = tr.children[colIdx];
+      if (!cell) return;
+      const trks = rowTrackings(tr, colIdx);
+      const outNos = ((tr.innerText || tr.textContent).match(/\b[LO]H\d{8,}\b/g) || []);
+      const hitTrk = trks.filter(t => info.rowsText.some(rt => rt.includes(t)));
+      if (!hitTrk.length && outNos.some(o => info.rowsText.some(rt => rt.includes(o)))) hitTrk.push(trks[0] || '출고번호');
+      const label = hitTrk.length
+        ? (trks.length > 1 ? `🆕 금일입고 ${hitTrk.length}/${trks.length}` : '🆕 금일입고')
+        : '';
+      plan.push({ tr, cell, label });
+    });
+    // 2단계: 바뀐 것만 쓰기
+    plan.forEach(({ tr, cell, label }) => {
+      const badges = cell.querySelectorAll('.ta-badge');
+      if (label) {
+        hits++;
+        if (!tr.classList.contains('ta-hit')) tr.classList.add('ta-hit');
+        if (!badges.length) {
           const b = document.createElement('div');
           b.className = 'ta-badge';
-          b.textContent = trks.length > 1 ? `🆕 금일입고 ${hitTrk.length}/${trks.length}` : '🆕 금일입고';
-          tr.children[colIdx].appendChild(b);
-        } else if (onlyToday) {
-          tr.style.display = 'none';
+          b.textContent = label;
+          cell.appendChild(b);
+        } else {
+          if (badges[0].textContent !== label) badges[0].textContent = label;
+          for (let i = 1; i < badges.length; i++) badges[i].remove();
         }
-      });
-      renderPanel(hits, info);
-    } catch (e) {
-      renderPanel(0, null, e.message);
+        if (tr.dataset.taHidden) { tr.style.display = ''; delete tr.dataset.taHidden; }
+      } else {
+        if (tr.classList.contains('ta-hit')) tr.classList.remove('ta-hit');
+        badges.forEach(b => b.remove());
+        if (onlyToday && !tr.dataset.taHidden) { tr.style.display = 'none'; tr.dataset.taHidden = '1'; }
+        if (!onlyToday && tr.dataset.taHidden) { tr.style.display = ''; delete tr.dataset.taHidden; }
+      }
+    });
+    return hits;
+  }
+
+  function removePanel() {
+    const p = document.getElementById('ta-panel');
+    if (p) { observer.disconnect(); p.remove(); lastPanelKey = ''; observer.takeRecords(); startObserve(); }
+  }
+
+  // 저장된 데이터로 즉시(같은 순간에) 다시 칠함 — 화면이 그려지기 전에 끝나서 깜빡이지 않음
+  function applyNow() {
+    const table = findPackingTable();
+    if (!table) { removePanel(); return; }
+    if (!cache) return;
+    ensureStyle();
+    observer.disconnect();
+    try {
+      const hits = applyRows(table, cache);
+      renderPanel(hits, cache);
     } finally {
-      busy = false;
+      observer.takeRecords();
       startObserve();
     }
   }
 
-  /* ===== 리스트 변경 감지 (검색·페이지 이동 등) ===== */
-  let timer = null;
-  const observer = new MutationObserver(() => {
-    clearTimeout(timer);
-    timer = setTimeout(() => run(false), 600);
+  let loading = false;
+  async function run(force) {
+    if (!findPackingTable()) { removePanel(); return; }
+    if (!force && cache && Date.now() - cache.time < CACHE_MS) { applyNow(); return; }
+    if (loading) return;
+    loading = true;
+    try {
+      await loadTodayRows(force);
+      applyNow();
+    } catch (e) {
+      ensureStyle();
+      observer.disconnect();
+      renderPanel(0, null, e.message);
+      observer.takeRecords();
+      startObserve();
+    } finally {
+      loading = false;
+    }
+  }
+
+  /* ===== 리스트 변경 감지 (검색·페이지 이동·다른 스크립트의 화면 변경 등) ===== */
+  const observer = new MutationObserver(muts => {
+    // 금일입고 패널 안에서만 생긴 변화는 무시
+    const relevant = muts.some(m => {
+      const t = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+      return !(t && t.closest && t.closest('#ta-panel'));
+    });
+    if (relevant) run(false);
   });
   function startObserve() {
     observer.observe(document.body, { childList: true, subtree: true });
