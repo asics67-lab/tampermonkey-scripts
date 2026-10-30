@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [物流] ロケーション移動（一括編集・印刷）
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      9.1
+// @version      9.2
 // @description  入荷トラッキング画面：ロケーション一括移動・ラベル印刷。v9.0 スキャンだけで追加・ロケーションスキャン指定・確認ダイアログ削減・タブレット対応
 // @author       物流チーム
 // @match        https://www.platform.co.jp/admin/store/trackingno*
@@ -14,7 +14,7 @@
 // ==/UserScript==
 
 /* =====================================================================
- *  [2] 로케이션 이동 v9.1  — /admin/store/trackingno
+ *  [2] 로케이션 이동 v9.2  — /admin/store/trackingno
  * ===================================================================== */
 
 (function() {
@@ -35,7 +35,8 @@
     function __main() {
 
     let selectedOrder = []; // 체크된 순서와 지정 로케이션을 저장할 실시간 바인딩 배열
-    let lastFocusedInput = null; // 마지막으로 포커스된 입력창 저장
+    let lastFocusedInput = null;
+    let assignLocationToTarget = () => {}; // [v9.2] 모달 생성 시 실제 함수로 교체 // 마지막으로 포커스된 입력창 저장
     let shippingDatabase = []; // 세션 우회로 수집된 출고(LH) 매핑 DB
     let searchedItemsCache = []; // 검색된 임시 항목들을 저장할 캐시 (멀티 박스 누락 방지용)
     let realtimeEmptyLocations = []; // 서버 상에서 실제로 비어있는 로케이션 캐시 배열
@@ -1021,7 +1022,10 @@
             <div id="custom-modal-content">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                     <h4 style="margin: 0; font-weight: 800; color: #343a40;">📦 一括編集リスト</h4>
-                    <span style="font-size: 12px; color: #868e96;">追跡番号をスキャン → ロケーションをスキャン（またはボタン）→ 保存</span>
+                    <label id="lm-instant-wrap" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;font-weight:800;color:#2b8a3e;background:#ebfbee;border:1.5px solid #8ce99a;border-radius:10px;padding:6px 12px;margin:0;">
+                        <input type="checkbox" id="lm-instant" style="width:20px;height:20px;cursor:pointer;">
+                        ⚡ 即時保存・印刷（ロケーションを押すとすぐ保存）
+                    </label>
                 </div>
 
                 <div id="modal-search-box" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; padding: 15px; background: #fff9db; border: 1px solid #ffe066; border-radius: 10px; margin-bottom: 15px;">
@@ -1242,6 +1246,13 @@
                 // 클릭 전 타겟 입력창 상태 한번 더 보정
                 updateActiveInputHighlight();
 
+                // [v9.2] 즉시 모드: 누르는 순간 저장·라벨 인쇄·빈 로케이션 자동 갱신
+                if (isInstantMode()) {
+                    closeAllPopups();
+                    assignLocationToTarget(locVal);
+                    return;
+                }
+
                 if (lastFocusedInput) {
                     lastFocusedInput.value = locVal;
                     lastFocusedInput.dispatchEvent(new Event('input', { bubbles: true })); // 입력 동기화 트리거
@@ -1324,7 +1335,7 @@
             // 예: C4-1-03, A1-2 처럼 "영문으로 시작 + 하이픈 + 숫자" 이고 짧은 코드
             return /^[A-Z][A-Z0-9]{0,3}-\d{1,3}(-[A-Z0-9]{1,4})*$/.test(u) && u.length <= 12;
         };
-        const assignLocationToTarget = (locVal) => {
+        assignLocationToTarget = (locVal) => {
             const inputs = Array.from(document.querySelectorAll('.loc-input'));
             if (inputs.length === 0) { beep(false); toast('先に追跡番号をスキャンしてください', 'warn'); return; }
             const unchanged = inputs.filter(i => cleanStr(i.value) === cleanStr(i.getAttribute('data-original')));
@@ -1338,6 +1349,11 @@
             lastFocusedInput = rest[0] || null;
             updateActiveInputHighlight();
             renderDynamicLocationPicker();
+            if (isInstantMode()) {
+                toast(`💾 ${no} → ${locVal} 保存中...`, 'warn', 4000);
+                saveInputs(sameBoxes);
+                return;
+            }
             beep(true); flashSearch(true);
             toast(`📍 ${locVal} に指定（${sameBoxes.length}箱）`);
         };
@@ -1452,6 +1468,21 @@
 
     const modal = createModal();
 
+    // [v9.2] 즉시 저장 모드 (기본 ON, PC마다 마지막 선택 기억)
+    (() => {
+        const c = document.getElementById('lm-instant');
+        if (!c) return;
+        let v = '1';
+        try { v = localStorage.getItem('lm-instant-mode') ?? '1'; } catch (e) {}
+        c.checked = v === '1';
+        const paint = () => {
+            const w = document.getElementById('lm-instant-wrap');
+            if (w) { w.style.background = c.checked ? '#ebfbee' : '#f1f3f5'; w.style.color = c.checked ? '#2b8a3e' : '#868e96'; w.style.borderColor = c.checked ? '#8ce99a' : '#dee2e6'; }
+        };
+        paint();
+        c.addEventListener('change', () => { try { localStorage.setItem('lm-instant-mode', c.checked ? '1' : '0'); } catch (e) {} paint(); });
+    })();
+
     if (ui.filterInput) {
         ui.filterInput.addEventListener('input', function() {
             const val = this.value.trim().toLowerCase();
@@ -1490,6 +1521,7 @@
 
     // [v9.0] 공용 헬퍼
     let __savedSomething = false;
+    function isInstantMode() { const c = document.getElementById('lm-instant'); return !!(c && c.checked); }
     function hasUnsavedChanges() {
         return Array.from(document.querySelectorAll('#modal-list-body .loc-input'))
             .some(i => i.value.trim() !== (i.getAttribute('data-original') || ''));
@@ -1833,16 +1865,23 @@
     }
 
     // 5. 일괄 저장 및 출력 로직 (v7.6 연속 일괄 인쇄 무결점 패치)
-    modal.save.onclick = async function() {
+    modal.save.onclick = function() {
         const inputs = Array.from(modal.body.querySelectorAll('.loc-input'));
-        const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
-
-        const changedInputs = inputs.filter(input => {
-            const originalLoc = input.getAttribute('data-original');
-            return input.value.trim() !== originalLoc;
-        });
-
+        const changedInputs = inputs.filter(input => input.value.trim() !== input.getAttribute('data-original'));
         if (changedInputs.length === 0) { beep(false); toast('変更された項目がありません', 'warn'); return; }
+        saveInputs(changedInputs);
+    };
+
+    // [v9.2] 저장은 순서대로 한 건씩 처리 (빠르게 연속으로 눌러도 꼬이지 않게)
+    let __saveChain = Promise.resolve();
+    function saveInputs(changedInputs) {
+        __saveChain = __saveChain.then(() => __doSave(changedInputs)).catch(e => console.error(e));
+        return __saveChain;
+    }
+    async function __doSave(changedInputs) {
+        changedInputs = changedInputs.filter(i => document.body.contains(i));
+        if (!changedInputs.length) return;
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
         const okInputs = [], failNos = [];
 
         modal.save.disabled = true;
@@ -1897,8 +1936,8 @@
         }
         __savedSomething = __savedSomething || okInputs.length > 0;
 
-        // 데이터 반영 트랜잭션 완결 대기 (1.2초 보장)
-        await new Promise(r => setTimeout(r, 1200));
+        // 라벨 데이터는 화면에서 가져오므로 짧게만 대기
+        await new Promise(r => setTimeout(r, 300));
 
         // [안전장치 단계 2]: 단일 window.open 호출로 브라우저 팝업 제한 우회 및 연속 통합 인쇄
         let allLabelsToPrint = [];
@@ -1939,6 +1978,10 @@
 
         // [v9.0] 완료 알림창 대신 토스트, 저장된 행은 리스트에서 자동 제거 (실패한 행만 남김)
         const okIds = okInputs.map(i => i.getAttribute('data-id'));
+        // [v9.2] 사용한 로케이션은 서버 갱신을 기다리지 않고 바로 버튼에서 제거
+        const usedLocs = okInputs.map(i => i.value.trim().toUpperCase());
+        realtimeEmptyLocations = realtimeEmptyLocations.filter(l => !usedLocs.includes(String(l).toUpperCase()));
+        lastRenderedLocsKey = '';
         selectedOrder = selectedOrder.filter(it => !okIds.includes(it.id));
         okIds.forEach(id => { const cb = document.querySelector(`.sub_checkbox[value="${id}"]`); if (cb) cb.checked = false; });
         renderModalList();
@@ -1947,7 +1990,8 @@
             toast(`✅ ${okInputs.length}件保存\n❌ ${failNos.length}件失敗（リストに残しています）\n${[...new Set(failNos)].join(', ')}`, 'err', 6000);
         } else {
             beep(true);
-            toast(`✅ ${okInputs.length}件保存・印刷しました`);
+            const nos = [...new Set(okInputs.map(i => i.getAttribute('data-no')))];
+            toast(nos.length === 1 ? `✅ ${nos[0]} → ${okInputs[0].value.trim()}\n保存・印刷しました` : `✅ ${okInputs.length}件保存・印刷しました`);
         }
 
         modal.save.disabled = false;
