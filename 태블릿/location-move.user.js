@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [物流] ロケーション移動（一括編集・印刷）
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      9.2
+// @version      9.3
 // @description  入荷トラッキング画面：ロケーション一括移動・ラベル印刷。v9.0 スキャンだけで追加・ロケーションスキャン指定・確認ダイアログ削減・タブレット対応
 // @author       物流チーム
 // @match        https://www.platform.co.jp/admin/store/trackingno*
@@ -14,7 +14,7 @@
 // ==/UserScript==
 
 /* =====================================================================
- *  [2] 로케이션 이동 v9.2  — /admin/store/trackingno
+ *  [2] 로케이션 이동 v9.3  — /admin/store/trackingno
  * ===================================================================== */
 
 (function() {
@@ -662,14 +662,13 @@
         lastRenderedLocsKey = emptyLocsKey;
         pickerSection.innerHTML = '';
 
-        let data = { A: {}, B: {}, C: {}, ETC: {} };
+        // [v9.3] A·B·C뿐 아니라 F, H 등 모든 구역을 각각 따로 표시 / TEST 로케이션은 숨김
+        let data = {};
 
-        realtimeEmptyLocations.forEach(loc => {
-            const zone = /^[A-Z]/i.test(loc) ? loc.charAt(0).toUpperCase() : 'ETC';
-            const subZone = loc.split('-')[0]; // C1, C2 등 앞자리 세부 구역
-            const layer = loc.split('-')[1] || '0'; // 층수 정보
-
-            const targetZone = (zone === 'A' || zone === 'B' || zone === 'C') ? zone : 'ETC';
+        realtimeEmptyLocations.filter(loc => !/^TEST/i.test(String(loc).trim())).forEach(loc => {
+            const subZone = loc.split('-')[0]; // C1, F4 등 앞자리 세부 구역
+            const targetZone = /^[A-Z]/i.test(loc) ? loc.charAt(0).toUpperCase() : 'ETC';
+            if (!data[targetZone]) data[targetZone] = {};
 
             // 일반 구역 데이터 수집
             if (!data[targetZone][subZone]) data[targetZone][subZone] = [];
@@ -679,7 +678,7 @@
         let html = '';
 
         // 일반 구역 (A구역, B구역, C구역, 기타구역 전개)
-        ['A', 'B', 'C', 'ETC'].forEach(z => {
+        Object.keys(data).sort((a, b) => (a === 'ETC') - (b === 'ETC') || a.localeCompare(b)).forEach(z => {
             const subZones = data[z];
             if (!subZones || Object.keys(subZones).length === 0) return;
 
