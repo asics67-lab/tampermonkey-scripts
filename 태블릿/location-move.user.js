@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [物流] ロケーション移動（一括編集・印刷）
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      9.3
+// @version      9.5
 // @description  入荷トラッキング画面：ロケーション一括移動・ラベル印刷。v9.0 スキャンだけで追加・ロケーションスキャン指定・確認ダイアログ削減・タブレット対応
 // @author       物流チーム
 // @match        https://www.platform.co.jp/admin/store/trackingno*
@@ -14,7 +14,7 @@
 // ==/UserScript==
 
 /* =====================================================================
- *  [2] 로케이션 이동 v9.3  — /admin/store/trackingno
+ *  [2] 로케이션 이동 v9.5  — /admin/store/trackingno
  * ===================================================================== */
 
 (function() {
@@ -885,7 +885,7 @@
                             <div id="qr_lh_${i}" class="qr-small"></div>
                 `;
             } else {
-                labelsHTML += `<span class="custom-err-msg">[未出荷/通常入荷]</span>`;
+                labelsHTML += `<span class="custom-err-msg">未出荷 / 通常入荷</span>`;
             }
 
             labelsHTML += `
@@ -964,7 +964,10 @@
                 <title>ラベル印刷</title>
                 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
                 <style>
-                    body { margin: 0; padding: 0; font-family: "Malgun Gothic", sans-serif; background: #fff; }
+                    /* [v9.5] 인쇄 여백 0 → 브라우저가 라벨을 축소하지 않고, 날짜·about:blank 머리글/바닥글도 안 찍힘 */
+                    @page { margin: 0; }
+                    html, body { margin: 0; padding: 0; }
+                    body { font-family: "Malgun Gothic", sans-serif; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
                     .page { page-break-after: always; width: 100%; display: flex; flex-direction: column; align-items: center; padding: 1mm 0; }
                     .container { width: 55mm; height: 45mm; border: 1.5px solid #000; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; position: relative; overflow: hidden; background-color: #fff; }
 
@@ -993,7 +996,7 @@
                     .bottom-right { display: flex; flex-direction: column; justify-content: space-between; align-items: center; width: 14mm; height: 100%; }
                     .qr-big { width: 12mm; height: 12mm; display: flex; align-items: center; justify-content: center; background: #fff; }
                     .qr-big canvas, .qr-big img { max-width: 100%; max-height: 100%; }
-                    .custom-err-msg { font-size: 9px; font-weight: bold; color: red; text-align: center; width: 100%; }
+                    .custom-err-msg { font-size: 20px; font-weight: 900; color: #000; text-align: center; width: 100%; letter-spacing: 1px; }
                     @media print { .no-print { display: none; } .page { padding: 0; } }
                 </style>
             </head>
@@ -1041,7 +1044,7 @@
                     <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                         <label style="font-weight: 800; font-size: 13px; white-space: nowrap; color: #0066cc;">📍 ロケーション追加:</label>
                         <div class="input-group input-group-sm" style="width: 220px;">
-                            <input id="modal-add-location-input" type="text" class="form-control form-control-sm" placeholder="新しいロケーションを入力..." style="border-radius: 8px 0 0 8px; font-weight: bold;">
+                            <input id="modal-add-location-input" type="text" class="form-control form-control-sm" placeholder="例: F4~6-1~3-1~2" style="border-radius: 8px 0 0 8px; font-weight: bold;">
                             <button id="btn-modal-add-location" class="btn btn-sm btn-outline-primary" type="button" style="border-radius: 0 8px 8px 0; font-weight: 700;">追加</button>
                         </div>
                         <span id="modal-add-location-status" style="font-size: 11px; font-weight: 700; display: none; margin-left: 4px;"></span>
@@ -1099,57 +1102,73 @@
         const addLocBtn = overlay.querySelector('#btn-modal-add-location');
         const addLocStatus = overlay.querySelector('#modal-add-location-status');
 
+        // [v9.4] 로케이션 여러 개 한 번에 추가
+        //  - 쉼표·공백으로 여러 개:  F4-1-1, F4-1-2
+        //  - 범위(~) 사용:           F4~6-1~3-1~2  → F4-1-1 ~ F6-3-2 (18개)
+        const expandLocations = (text) => {
+            const out = [];
+            text.toUpperCase().split(/[\s,、，]+/).filter(Boolean).forEach(tok => {
+                let combos = [''];
+                tok.split('-').forEach((seg, idx) => {
+                    const m = seg.match(/^([A-Z]*)(\d+)~([A-Z]*)(\d+)$/);
+                    let vals;
+                    if (m) {
+                        const a = parseInt(m[2], 10), b = parseInt(m[4], 10), w = m[2].length;
+                        vals = [];
+                        for (let n = Math.min(a, b); n <= Math.max(a, b); n++) vals.push(m[1] + String(n).padStart(w, '0'));
+                    } else vals = [seg];
+                    combos = combos.flatMap(c => vals.map(v => idx === 0 ? v : c + '-' + v));
+                });
+                combos.forEach(c => { if (c && !out.includes(c)) out.push(c); });
+            });
+            return out;
+        };
         const handleAddLocation = async () => {
-            const newLocVal = addLocInput.value.trim().toUpperCase();
-            if (!newLocVal) {
-                alert("追加するロケーション名を入力してください。");
+            const list = expandLocations(addLocInput.value.trim());
+            if (!list.length) {
+                alert("追加するロケーション名を入力してください。\n例）F4-1-1, F4-1-2\n範囲）F4~6-1~3-1~2");
                 addLocInput.focus();
                 return;
+            }
+            if (list.length > 300) { alert(`${list.length}件は多すぎます（最大300件）`); return; }
+            if (list.length > 1) {
+                const preview = list.length <= 30 ? list.join(', ') : list.slice(0, 30).join(', ') + ` …他${list.length - 30}件`;
+                if (!confirm(`次の${list.length}件のロケーションを追加しますか？\n\n${preview}`)) return;
             }
 
             addLocBtn.disabled = true;
             addLocStatus.style.display = 'inline-block';
             addLocStatus.style.color = '#e67e22';
-            addLocStatus.innerHTML = '<i class="ti ti-loader rotate"></i> 登録中...';
 
-            try {
-                const csrfMeta = document.querySelector('meta[name="csrf-token"]');
-                const csrfToken = csrfMeta ? csrfMeta.content : '';
-                const baseUrl = window.location.origin;
-
-                const response = await fetch(`${baseUrl}/admin/store/location-tracking`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'X-CSRF-TOKEN': csrfToken
-                    },
-                    body: new URLSearchParams({
-                        'location': newLocVal
-                    })
-                });
-
-                if (response.ok) {
-                    addLocStatus.style.color = '#28a745';
-                    addLocStatus.innerHTML = '✅ 追加完了！';
-                    addLocInput.value = '';
-
-                    // 로케이션 추가 완료 직후 실시간 로케이션 동적 갱신 구동
-                    await initLocationTrackingSync(true);
-
-                    setTimeout(() => {
-                        addLocStatus.style.display = 'none';
-                    }, 2000);
-                } else {
-                    addLocStatus.style.color = '#dc3545';
-                    addLocStatus.innerHTML = '❌ 登録失敗';
-                }
-            } catch (err) {
-                console.error(err);
-                addLocStatus.style.color = '#dc3545';
-                addLocStatus.innerHTML = '❌ エラー発生';
-            } finally {
-                addLocBtn.disabled = false;
+            const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+            const csrfToken = csrfMeta ? csrfMeta.content : '';
+            const baseUrl = window.location.origin;
+            const failed = [];
+            for (let i = 0; i < list.length; i++) {
+                addLocStatus.innerHTML = `<i class="ti ti-loader rotate"></i> 登録中... (${i + 1}/${list.length})`;
+                try {
+                    const response = await fetch(`${baseUrl}/admin/store/location-tracking`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-TOKEN': csrfToken },
+                        body: new URLSearchParams({ 'location': list[i] })
+                    });
+                    if (!response.ok) failed.push(list[i]);
+                } catch (err) { console.error(err); failed.push(list[i]); }
             }
+
+            if (failed.length === 0) {
+                addLocStatus.style.color = '#28a745';
+                addLocStatus.innerHTML = `✅ ${list.length}件 追加完了！`;
+                addLocInput.value = '';
+                setTimeout(() => { addLocStatus.style.display = 'none'; }, 3000);
+            } else {
+                addLocStatus.style.color = '#dc3545';
+                addLocStatus.innerHTML = `❌ ${failed.length}件失敗: ${failed.join(', ')}`;
+                addLocInput.value = failed.join(', ');
+            }
+            lastRenderedLocsKey = '';
+            await initLocationTrackingSync(true);
+            addLocBtn.disabled = false;
         };
 
         addLocBtn.onclick = handleAddLocation;
