@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [物流] ロケーション移動（一括編集・印刷）
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      9.5
+// @version      9.6
 // @description  入荷トラッキング画面：ロケーション一括移動・ラベル印刷。v9.0 スキャンだけで追加・ロケーションスキャン指定・確認ダイアログ削減・タブレット対応
 // @author       物流チーム
 // @match        https://www.platform.co.jp/admin/store/trackingno*
@@ -14,7 +14,7 @@
 // ==/UserScript==
 
 /* =====================================================================
- *  [2] 로케이션 이동 v9.5  — /admin/store/trackingno
+ *  [2] 로케이션 이동 v9.6  — /admin/store/trackingno
  * ===================================================================== */
 
 (function() {
@@ -36,7 +36,8 @@
 
     let selectedOrder = []; // 체크된 순서와 지정 로케이션을 저장할 실시간 바인딩 배열
     let lastFocusedInput = null;
-    let assignLocationToTarget = () => {}; // [v9.2] 모달 생성 시 실제 함수로 교체 // 마지막으로 포커스된 입력창 저장
+    let assignLocationToTarget = () => {}; // [v9.2] 모달 생성 시 실제 함수로 교체
+    let bulkAssign = () => {};             // [v9.6] まとめて配置 // 마지막으로 포커스된 입력창 저장
     let shippingDatabase = []; // 세션 우회로 수집된 출고(LH) 매핑 DB
     let searchedItemsCache = []; // 검색된 임시 항목들을 저장할 캐시 (멀티 박스 누락 방지용)
     let realtimeEmptyLocations = []; // 서버 상에서 실제로 비어있는 로케이션 캐시 배열
@@ -620,7 +621,7 @@
                 <div style="width: 100%; margin-bottom: 15px; border-bottom: 2px solid #f0f4f8; padding-bottom: 10px; text-align: left;">
                     <div style="font-size: 14px; font-weight: bold; color: ${color}; margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
                         <span>📍 ${sz} エリア情報</span>
-                        <span class="bulk-register-btn" data-locs="${subZoneObj[sz].join(',')}" style="font-size:13px; color:#228be6; cursor:pointer; font-weight:bold; text-decoration:underline;">[一括登録]</span>
+                        <span class="bulk-register-btn" data-locs="${subZoneObj[sz].join(',')}" style="font-size:14px; color:#fff; background:#228be6; cursor:pointer; font-weight:800; padding:4px 12px; border-radius:6px; white-space:nowrap;">📦 まとめて配置</span>
                     </div>
                     <div style="display: flex; flex-wrap: wrap; gap: 8px;">
                         ${subZoneObj[sz].map(l => `
@@ -709,7 +710,7 @@
                         html += '<div style="margin-bottom:10px; text-align: left;">';
                         html += '<div style="font-size:13px; color:#666; font-weight:bold; margin-bottom:5px; display:flex; align-items:center; gap:8px;">';
                         html += '<span>' + f + '段</span>';
-                        html += '<span class="bulk-register-btn" data-locs="' + layers[f].join(',') + '" style="font-size:13px; color:#228be6; cursor:pointer; font-weight:bold; text-decoration:underline;">[一括登録]</span>';
+                        html += '<span class="bulk-register-btn" data-locs="' + layers[f].join(',') + '" style="font-size:14px; color:#fff; background:#228be6; cursor:pointer; font-weight:800; padding:4px 12px; border-radius:6px; white-space:nowrap;">📦 まとめて配置</span>';
                         html += '</div>';
                         html += '<div style="display:flex; flex-wrap:wrap; gap:6px;">';
                         layers[f].forEach(l => {
@@ -723,7 +724,7 @@
                     html += '<div style="margin-bottom:10px; text-align: left;">';
                     html += '<div style="font-size:13px; color:#666; font-weight:bold; margin-bottom:5px; display:flex; align-items:center; gap:8px;">';
                     html += '<span>その他</span>';
-                    html += '<span class="bulk-register-btn" data-locs="' + otherLayers.join(',') + '" style="font-size:13px; color:#228be6; cursor:pointer; font-weight:bold; text-decoration:underline;">[一括登録]</span>';
+                    html += '<span class="bulk-register-btn" data-locs="' + otherLayers.join(',') + '" style="font-size:14px; color:#fff; background:#228be6; cursor:pointer; font-weight:800; padding:4px 12px; border-radius:6px; white-space:nowrap;">📦 まとめて配置</span>';
                     html += '</div>';
                     html += '<div style="display:flex; flex-wrap:wrap; gap:6px;">';
                     otherLayers.forEach(l => {
@@ -1200,57 +1201,14 @@
                 return;
             }
 
-            // [신규 기능]: 일괄등록 버튼 클릭 처리
+            // [v9.6] まとめて配置: 리스트의 Tracking들을 이 段의 빈 칸에 1건씩 순서대로 배치 (즉시 모드면 저장·인쇄까지)
             const bulkBtn = e.target.closest('.bulk-register-btn');
             if (bulkBtn) {
                 e.preventDefault();
                 e.stopPropagation();
-
-                const locsAttr = bulkBtn.getAttribute('data-locs');
-                if (!locsAttr) return;
-
-                // 가용한 빈 로케이션 배열 생성 및 자연 정렬
-                const availableLocs = locsAttr.split(',').map(l => l.trim()).filter(Boolean).sort((a, b) => {
-                    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
-                });
-
-                if (availableLocs.length === 0) return;
-
-                // 현재 리스트에 생성된 로케이션 입력칸 배열 추출
-                const inputs = Array.from(document.querySelectorAll('.loc-input'));
-                if (inputs.length === 0) return;
-
-                // 수정되지 않은(비어있거나 원래 값과 동일한) 대기 상태의 입력칸 우선 탐색
-                const targetInputs = inputs.filter(input => {
-                    const original = input.getAttribute('data-original') || '';
-                    const current = input.value.trim();
-                    return current === '' || cleanStr(current) === cleanStr(original);
-                });
-
-                // 대기 상태의 입력창이 존재하지 않는다면 전체 목록을 상단부터 덮어씌움
-                const inputsToFill = targetInputs.length > 0 ? targetInputs : inputs;
-
-                let filledCount = 0;
-                // 리스트 개수와 가용 방 개수 중 작은 값만큼 루프를 돌며 순차 매핑
-                for (let i = 0; i < inputsToFill.length; i++) {
-                    if (i < availableLocs.length) {
-                        const input = inputsToFill[i];
-                        input.value = availableLocs[i];
-                        input.dispatchEvent(new Event('input', { bubbles: true })); // 실시간 하이라이트 및 민트색 틴팅 스타일 주입
-                        filledCount++;
-                    } else {
-                        break;
-                    }
-                }
-
-                if (filledCount > 0) {
-                    // 성공 피드백 및 로케이션 상태 동기화 진행
-                    updateActiveInputHighlight();
-                    closeAllPopups();
-                    renderDynamicLocationPicker();
-                } else {
-                    alert("割り当て可能な空きロケーションがありません。");
-                }
+                const locsAttr = bulkBtn.getAttribute('data-locs') || '';
+                closeAllPopups();
+                bulkAssign(locsAttr.split(',').map(l => l.trim()).filter(Boolean));
                 return;
             }
 
@@ -1353,6 +1311,43 @@
             // 예: C4-1-03, A1-2 처럼 "영문으로 시작 + 하이픈 + 숫자" 이고 짧은 코드
             return /^[A-Z][A-Z0-9]{0,3}-\d{1,3}(-[A-Z0-9]{1,4})*$/.test(u) && u.length <= 12;
         };
+        bulkAssign = (locs) => {
+            const inputs = Array.from(document.querySelectorAll('.loc-input'));
+            const pending = inputs.filter(i => cleanStr(i.value) === cleanStr(i.getAttribute('data-original')));
+            if (!pending.length) { beep(false); toast('先に追跡番号をスキャンしてください', 'warn'); return; }
+            // 같은 Tracking의 박스는 같은 칸으로 묶음
+            const order = [], byNo = new Map();
+            pending.forEach(i => {
+                const no = i.getAttribute('data-no');
+                if (!byNo.has(no)) { byNo.set(no, []); order.push(no); }
+                byNo.get(no).push(i);
+            });
+            const used = new Set(inputs.map(i => i.value.trim().toUpperCase()));
+            const free = locs.filter(l => !used.has(String(l).toUpperCase()))
+                .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+            const n = Math.min(order.length, free.length);
+            if (!n) { beep(false); toast('この段に空きロケーションがありません', 'err'); return; }
+            const assigned = [];
+            for (let k = 0; k < n; k++) {
+                byNo.get(order[k]).forEach(i => {
+                    i.value = free[k];
+                    i.dispatchEvent(new Event('input', { bubbles: true }));
+                    assigned.push(i);
+                });
+            }
+            lastFocusedInput = null;
+            updateActiveInputHighlight();
+            renderDynamicLocationPicker();
+            const msg = `📦 ${n}件を配置: ${free[0]}${n > 1 ? ' ～ ' + free[n - 1] : ''}` +
+                (order.length > n ? `\n⚠ 空きが足りず ${order.length - n}件は未配置（リストに残しています）` : '');
+            if (isInstantMode()) {
+                toast(msg + '\n💾 保存中...', order.length > n ? 'warn' : 'ok', 4000);
+                saveInputs(assigned);
+            } else {
+                beep(true);
+                toast(msg, order.length > n ? 'warn' : 'ok', 4000);
+            }
+        };
         assignLocationToTarget = (locVal) => {
             const inputs = Array.from(document.querySelectorAll('.loc-input'));
             if (inputs.length === 0) { beep(false); toast('先に追跡番号をスキャンしてください', 'warn'); return; }
@@ -1413,7 +1408,8 @@
                     lastFocusedInput = inputs[before] || lastFocusedInput;
                     updateActiveInputHighlight();
                     beep(true); flashSearch(true);
-                    toast(`✅ ${no} 追加（${added}箱）`);
+                    const waiting = new Set(Array.from(document.querySelectorAll('.loc-input')).filter(i => cleanStr(i.value) === cleanStr(i.getAttribute('data-original'))).map(i => i.getAttribute('data-no'))).size;
+                    toast(`✅ ${no} 追加（${added}箱）` + (waiting > 1 ? `\n待機中 ${waiting}件 → 段の「まとめて配置」で一括変更` : ''));
                 } else {
                     beep(false); flashSearch(false);
                     toast(`${no} はすでにリストにあります`, 'warn');
@@ -1434,6 +1430,17 @@
             clearTimeout(serverSearchTimer);
             const v = this.value.trim();
             if (!v) return;
+            // [v9.6] "C5-2" 처럼 段까지만 입력하면 그 段의 빈 칸에 まとめて配置
+            const pref = v.toUpperCase();
+            const grp = realtimeEmptyLocations.filter(l => String(l).toUpperCase().startsWith(pref + '-'));
+            if (/^[A-Z][A-Z0-9]*(-\d+)?$/.test(pref) && !realtimeEmptyLocations.includes(pref) && grp.length && selectedOrder.length) {
+                this.value = '';
+                const modalResults = document.getElementById('modal-search-results');
+                if (modalResults) modalResults.innerHTML = '';
+                bulkAssign(grp);
+                this.focus();
+                return;
+            }
             if (isLocationCode(v)) {
                 this.value = '';
                 const modalResults = document.getElementById('modal-search-results');
@@ -2009,7 +2016,9 @@
         } else {
             beep(true);
             const nos = [...new Set(okInputs.map(i => i.getAttribute('data-no')))];
-            toast(nos.length === 1 ? `✅ ${nos[0]} → ${okInputs[0].value.trim()}\n保存・印刷しました` : `✅ ${okInputs.length}件保存・印刷しました`);
+            const remain = new Set(Array.from(document.querySelectorAll('.loc-input')).map(i => i.getAttribute('data-no'))).size;
+            toast((nos.length === 1 ? `✅ ${nos[0]} → ${okInputs[0].value.trim()}\n保存・印刷しました` : `✅ ${nos.length}件（${okInputs.length}箱）保存・印刷しました`)
+                + (remain ? `\n⚠ 未配置 ${remain}件がリストに残っています` : ''), remain ? 'warn' : 'ok', remain ? 5000 : 2200);
         }
 
         modal.save.disabled = false;
