@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [物流] ロケーション移動（一括編集・印刷）
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      8.8
-// @description  入荷トラッキング画面：ロケーション一括移動・ラベル印刷。v8.8 追跡番号検索の修正（全ページ読込・ハイフン対応・サーバー検索）
+// @version      9.1
+// @description  入荷トラッキング画面：ロケーション一括移動・ラベル印刷。v9.0 スキャンだけで追加・ロケーションスキャン指定・確認ダイアログ削減・タブレット対応
 // @author       物流チーム
 // @match        https://www.platform.co.jp/admin/store/trackingno*
 // @match        https://platform.co.jp/admin/store/trackingno*
@@ -14,12 +14,25 @@
 // ==/UserScript==
 
 /* =====================================================================
- *  [2] 로케이션 이동 v8.7  — /admin/store/trackingno
+ *  [2] 로케이션 이동 v9.1  — /admin/store/trackingno
  * ===================================================================== */
 
 (function() {
     'use strict';
     if (!/^\/admin\/store\/trackingno/.test(location.pathname)) return; // 입고 트래킹 페이지에서만 실행
+
+    // [v8.9] 태블릿 등에서 화면이 늦게 그려져도 버튼이 생기도록, 버튼 넣을 자리가 생길 때까지 최대 30초 기다림
+    const __ready = () => document.querySelector('.card-body') && (document.querySelector('.justify-content-sm-end') || document.querySelector('.d-flex.gap-2'));
+    if (__ready()) { __main(); }
+    else {
+        let __n = 0;
+        const __iv = setInterval(() => {
+            if (__ready()) { clearInterval(__iv); __main(); }
+            else if (++__n > 60) { clearInterval(__iv); console.warn('[ロケーション移動] ボタン設置場所が見つかりません'); }
+        }, 500);
+    }
+
+    function __main() {
 
     let selectedOrder = []; // 체크된 순서와 지정 로케이션을 저장할 실시간 바인딩 배열
     let lastFocusedInput = null; // 마지막으로 포커스된 입력창 저장
@@ -37,6 +50,32 @@
     function getTodayDate() {
         const now = new Date();
         return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+    }
+
+    // [v9.0] 스캔 결과를 화면을 안 봐도 알 수 있게 소리·토스트로 알림
+    let __audioCtx = null;
+    function beep(ok = true) {
+        try {
+            __audioCtx = __audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+            const o = __audioCtx.createOscillator(), g = __audioCtx.createGain();
+            o.type = 'square'; o.frequency.value = ok ? 1400 : 300;
+            g.gain.value = 0.08; o.connect(g); g.connect(__audioCtx.destination);
+            o.start(); o.stop(__audioCtx.currentTime + (ok ? 0.08 : 0.35));
+        } catch (e) {}
+    }
+    function toast(msg, type = 'ok', ms = 2200) {
+        let t = document.getElementById('lm-toast');
+        if (!t) { t = document.createElement('div'); t.id = 'lm-toast'; document.body.appendChild(t); }
+        const bg = type === 'ok' ? '#2b8a3e' : type === 'warn' ? '#e67700' : '#c92a2a';
+        t.style.cssText = `position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:2147483647;background:${bg};color:#fff;font-size:20px;font-weight:800;padding:14px 26px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.3);max-width:90vw;text-align:center;white-space:pre-line;`;
+        t.textContent = msg; t.style.display = 'block';
+        clearTimeout(t._h); t._h = setTimeout(() => { t.style.display = 'none'; }, ms);
+    }
+    function flashSearch(ok) {
+        const el = document.getElementById('modal-search-input');
+        if (!el) return;
+        el.style.transition = 'background .1s'; el.style.background = ok ? '#b2f2bb' : '#ffc9c9';
+        setTimeout(() => { el.style.background = ''; }, 450);
     }
 
     // 문자열 공백 및 특수문자 제거 비교용
@@ -412,6 +451,20 @@
             }
             #modal-search-results {
                 margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; max-height: 120px; overflow-y: auto;
+            }
+            /* [v9.0] 태블릿(터치) 화면에서 누르기 쉽게 크기 확대 */
+            @media (pointer: coarse), (max-width: 1280px) {
+                #custom-modal-content { padding: 16px !important; width: 98vw !important; max-width: 98vw !important; }
+                #modal-search-input { width: 100% !important; min-width: 260px; height: 50px; font-size: 22px !important; font-weight: 700; }
+                #modal-search-box > div:first-child { flex: 1 1 340px; }
+                .search-res-item { font-size: 19px !important; padding: 12px 18px !important; }
+                .search-res-item .res-loc { font-size: 17px !important; }
+                #modal-search-results { max-height: 200px !important; }
+                .loc-input { height: 46px; font-size: 20px; }
+                .modal-table td { font-size: 16px; padding: 8px 6px; }
+                .btn-remove-item { font-size: 30px !important; padding: 6px 12px; display: inline-block; }
+                .modal-footer .btn { font-size: 18px !important; padding: 12px 22px !important; }
+                #modal-save-btn { font-size: 20px !important; }
             }
             .search-res-item {
                 background: white; border: 1.5px solid #fab005; color: #f08c00; padding: 5px 16px; border-radius: 20px; font-size: 13px; font-weight: 700; cursor: pointer; transition: all 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
@@ -968,14 +1021,14 @@
             <div id="custom-modal-content">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                     <h4 style="margin: 0; font-weight: 800; color: #343a40;">📦 一括編集リスト</h4>
-                    <span style="font-size: 12px; color: #868e96;">Esc: 閉じる / Tab: 検索欄へ移動</span>
+                    <span style="font-size: 12px; color: #868e96;">追跡番号をスキャン → ロケーションをスキャン（またはボタン）→ 保存</span>
                 </div>
 
                 <div id="modal-search-box" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; padding: 15px; background: #fff9db; border: 1px solid #ffe066; border-radius: 10px; margin-bottom: 15px;">
                     <!-- Left: Search Box -->
                     <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
                         <label style="font-weight: 800; font-size: 13px; white-space: nowrap; color: #856404;">🔍 項目検索:</label>
-                        <input id="modal-search-input" type="text" placeholder="追跡番号またはロケーションを入力..." class="form-control form-control-sm" style="width: 250px; border-radius: 8px;">
+                        <input id="modal-search-input" type="text" placeholder="追跡番号 / ロケーションをスキャン（Enter）" autocomplete="off" class="form-control form-control-sm" style="width: 250px; border-radius: 8px;">
                         <button id="btn-search-remote" class="btn btn-warning btn-sm" style="font-weight: 700; border-radius: 8px;">強制同期検索</button>
                         <span id="remote-search-status" style="font-size: 11px; color: #228be6; font-weight: 700; display: none; margin-left: 8px;">
                              <i class="ti ti-loader rotate"></i> 全ページのデータを読み込み中...
@@ -1024,8 +1077,8 @@
                     <tbody id="modal-list-body"></tbody>
                 </table>
                 <div class="modal-footer">
-                    <button id="modal-close-btn" class="btn btn-outline-secondary btn-sm me-2" type="button">閉じる(再読み込み)</button>
-                    <button id="modal-clear-list-btn" class="btn btn-outline-danger btn-sm me-2" type="button">🗑️ リストを全てクリア</button>
+                    <button id="modal-close-btn" class="btn btn-outline-secondary btn-sm me-2" type="button">閉じる</button>
+                    <button id="modal-clear-list-btn" class="btn btn-outline-danger btn-sm me-2" type="button">🗑️ クリア</button>
                     <button id="modal-save-btn" class="btn btn-primary btn-sm" type="button" style="padding-left: 20px; padding-right: 20px; font-weight: 700;">💾 変更を保存して一括印刷</button>
                 </div>
             </div>
@@ -1107,6 +1160,11 @@
         // 세부 전열 팝업 레이어 열기/닫기 및 로케이션 주입 이벤트 위임 통합 처리 (이벤트 꼬임 완전 차단)
         pickerSection.addEventListener('click', function(e) {
             const closeAllPopups = () => pickerSection.querySelectorAll('.pop-content').forEach(p => p.style.display = 'none');
+            // [v9.1] PC에서 로케이션 버튼을 누른 뒤 커서를 검색창으로 돌려서, 바로 다음 Tracking을 스캔할 수 있게 함
+            //        (태블릿은 화면 키보드가 매번 올라오므로 제외)
+            if (e.target.closest('.final-btn, .bulk-register-btn') && !matchMedia('(pointer: coarse)').matches) {
+                setTimeout(() => { const ms = document.getElementById('modal-search-input'); if (ms) ms.focus(); }, 0);
+            }
 
             // 토글 버튼 클릭 처리 (일반 구역 토글 버튼 - 3층 전용 제거에 맞춘 타겟 필터 조정)
             const toggleBtn = e.target.closest('.sz-toggle');
@@ -1255,6 +1313,104 @@
             }
         };
 
+        // [v9.0] Enter(스캐너) 처리
+        //  - 로케이션이면 → 지금 선택된 행(파란 테두리)에 지정하고 다음 행으로
+        //  - 트래킹이면 → 결과가 1건일 때 바로 리스트에 추가 (손으로 누를 필요 없음)
+        const isLocationCode = (v) => {
+            const u = v.trim().toUpperCase();
+            if (!u) return false;
+            if (realtimeEmptyLocations.includes(u)) return true;
+            if (selectedOrder.some(it => String(it.loc || '').toUpperCase() === u)) return true;
+            // 예: C4-1-03, A1-2 처럼 "영문으로 시작 + 하이픈 + 숫자" 이고 짧은 코드
+            return /^[A-Z][A-Z0-9]{0,3}-\d{1,3}(-[A-Z0-9]{1,4})*$/.test(u) && u.length <= 12;
+        };
+        const assignLocationToTarget = (locVal) => {
+            const inputs = Array.from(document.querySelectorAll('.loc-input'));
+            if (inputs.length === 0) { beep(false); toast('先に追跡番号をスキャンしてください', 'warn'); return; }
+            const unchanged = inputs.filter(i => cleanStr(i.value) === cleanStr(i.getAttribute('data-original')));
+            let target = (lastFocusedInput && document.body.contains(lastFocusedInput) && unchanged.includes(lastFocusedInput)) ? lastFocusedInput : unchanged[0];
+            if (!target) { beep(false); toast('すべての行にロケーションが入っています', 'warn'); return; }
+            // 같은 트래킹의 박스가 여러 개면, 아직 안 바뀐 박스 전부 같은 로케이션으로 지정
+            const no = target.getAttribute('data-no');
+            const sameBoxes = unchanged.filter(i => i.getAttribute('data-no') === no);
+            sameBoxes.forEach(i => { i.value = locVal; i.dispatchEvent(new Event('input', { bubbles: true })); });
+            const rest = Array.from(document.querySelectorAll('.loc-input')).filter(i => cleanStr(i.value) === cleanStr(i.getAttribute('data-original')));
+            lastFocusedInput = rest[0] || null;
+            updateActiveInputHighlight();
+            renderDynamicLocationPicker();
+            beep(true); flashSearch(true);
+            toast(`📍 ${locVal} に指定（${sameBoxes.length}箱）`);
+        };
+        const tryAddByTracking = async (raw) => {
+            const q = raw.trim().toLowerCase();
+            // 스캐너가 앞뒤에 붙이는 문자(a…a 등 코다바 시작/끝 문자) 제거
+            let qClean = cleanStr(q);
+            const m = qClean.match(/^[a-d](\d{8,})[a-d]$/);
+            if (m) qClean = m[1];
+            const groupsOf = (items) => {
+                const g = {};
+                items.forEach(it => { if (cleanStr(it.no).endsWith(qClean)) g[cleanStr(it.no)] = it.no; });
+                return Object.values(g);
+            };
+            const local = new Map();
+            allPagesCache.forEach(it => local.set(it.id, it));
+            document.querySelectorAll('tbody tr').forEach(r => { const it = parseTrackingRow(r); if (it && !local.has(it.id)) local.set(it.id, it); });
+            let pool = Array.from(local.values());
+            let groups = groupsOf(pool);
+            if (groups.length === 0 && qClean.length >= 8) {
+                toast('サーバーで検索中...', 'warn', 1500);
+                const items = await serverSearchTracking(raw.trim());
+                items.forEach(it => { if (!allPagesCache.find(x => x.id === it.id)) allPagesCache.push(it); });
+                pool = pool.concat(items);
+                groups = groupsOf(pool);
+            }
+            if (groups.length === 1) {
+                const no = groups[0];
+                searchedItemsCache = pool.filter(it => cleanStr(it.no) === cleanStr(no));
+                const before = selectedOrder.length;
+                addAllItemsByTrackingNo(no);
+                const added = selectedOrder.length - before;
+                modalSearch.value = '';
+                const modalResults = document.getElementById('modal-search-results');
+                if (modalResults) modalResults.innerHTML = '';
+                if (added > 0) {
+                    // 방금 추가한 첫 행을 로케이션 지정 대상으로
+                    const inputs = Array.from(document.querySelectorAll('.loc-input'));
+                    lastFocusedInput = inputs[before] || lastFocusedInput;
+                    updateActiveInputHighlight();
+                    beep(true); flashSearch(true);
+                    toast(`✅ ${no} 追加（${added}箱）`);
+                } else {
+                    beep(false); flashSearch(false);
+                    toast(`${no} はすでにリストにあります`, 'warn');
+                }
+            } else if (groups.length === 0) {
+                beep(false); flashSearch(false);
+                toast('❌ 該当なし', 'err');
+                modalSearch.select();
+            } else {
+                beep(false);
+                toast(`${groups.length}件該当 — 下の候補から選んでください`, 'warn');
+                modalSearch.dispatchEvent(new Event('input'));
+            }
+        };
+        modalSearch.addEventListener('keydown', function(e) {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            clearTimeout(serverSearchTimer);
+            const v = this.value.trim();
+            if (!v) return;
+            if (isLocationCode(v)) {
+                this.value = '';
+                const modalResults = document.getElementById('modal-search-results');
+                if (modalResults) modalResults.innerHTML = '';
+                assignLocationToTarget(v.toUpperCase());
+            } else {
+                tryAddByTracking(v);
+            }
+            this.focus();
+        });
+
         // 강제 새로고침용 수동 연동 트리거
         remoteBtn.onclick = function() {
             startPreFetchingAllPages(true);
@@ -1326,9 +1482,30 @@
             }
         }
         if (e.key === 'Escape' && modal.overlay.style.display === 'flex') {
-            location.reload();
+            // [v9.0] 저장 안 한 변경이 있으면 한 번 확인 (실수로 리스트가 날아가는 것 방지)
+            if (hasUnsavedChanges() && !confirm('保存していない変更があります。閉じますか？')) return;
+            closeModal();
         }
     });
+
+    // [v9.0] 공용 헬퍼
+    let __savedSomething = false;
+    function hasUnsavedChanges() {
+        return Array.from(document.querySelectorAll('#modal-list-body .loc-input'))
+            .some(i => i.value.trim() !== (i.getAttribute('data-original') || ''));
+    }
+    function closeModal() {
+        if (__savedSomething) { location.reload(); return; }
+        modal.overlay.style.display = 'none';
+    }
+    function updateSaveCount() {
+        const n = Array.from(document.querySelectorAll('#modal-list-body .loc-input'))
+            .filter(i => i.value.trim() !== (i.getAttribute('data-original') || '')).length;
+        if (modal && modal.save && !modal.save.disabled) {
+            modal.save.innerHTML = `💾 保存して印刷（${n}件）`;
+            modal.save.style.opacity = n ? '1' : '.55';
+        }
+    }
 
     function renderModalList() {
         modal.body.innerHTML = '';
@@ -1411,6 +1588,7 @@
                 }
                 updateLocationPickerStatus();
                 applyInputStyle(this); // 입력값 변경 감지 시 즉시 스타일 업데이트
+                updateSaveCount();
             };
         });
 
@@ -1429,6 +1607,7 @@
         // 리스트 변경 시 타겟 입력창 하이라이트 상태 업데이트
         updateActiveInputHighlight();
         updateLocationPickerStatus();
+        updateSaveCount();
     }
 
     ui.batchBtn.onclick = function() {
@@ -1663,8 +1842,8 @@
             return input.value.trim() !== originalLoc;
         });
 
-        if (changedInputs.length === 0) { alert('変更された項目がありません。'); return; }
-        if (!confirm(`ロケーションが変更された${changedInputs.length}件のみ保存しますか？`)) return;
+        if (changedInputs.length === 0) { beep(false); toast('変更された項目がありません', 'warn'); return; }
+        const okInputs = [], failNos = [];
 
         modal.save.disabled = true;
         const originalBtnText = modal.save.innerHTML;
@@ -1690,7 +1869,9 @@
                 });
 
                 const result = await response.json();
+                if (result.status !== 'success') failNos.push(input.getAttribute('data-no'));
                 if (result.status === 'success') {
+                    okInputs.push(input);
                     const row = input.closest('tr');
                     const displayCell = row.querySelector('.loc-display-cell');
                     if (displayCell) {
@@ -1712,8 +1893,9 @@
                         targetItem.newLoc = newLoc;
                     }
                 }
-            } catch (err) { console.error(err); }
+            } catch (err) { console.error(err); failNos.push(input.getAttribute('data-no')); }
         }
+        __savedSomething = __savedSomething || okInputs.length > 0;
 
         // 데이터 반영 트랜잭션 완결 대기 (1.2초 보장)
         await new Promise(r => setTimeout(r, 1200));
@@ -1722,7 +1904,7 @@
         let allLabelsToPrint = [];
 
         for (let trackingNo of changedTrackingNos) {
-            const matchingInputs = changedInputs.filter(input => input.getAttribute('data-no') === trackingNo);
+            const matchingInputs = okInputs.filter(input => input.getAttribute('data-no') === trackingNo); // [v9.0] 저장 성공한 것만 인쇄
 
             matchingInputs.forEach(input => {
                 const locId = input.getAttribute('data-id');
@@ -1755,16 +1937,30 @@
             }
         }
 
-        alert("選択した項目の処理が完了しました。リストで変更内容を確認できます。");
+        // [v9.0] 완료 알림창 대신 토스트, 저장된 행은 리스트에서 자동 제거 (실패한 행만 남김)
+        const okIds = okInputs.map(i => i.getAttribute('data-id'));
+        selectedOrder = selectedOrder.filter(it => !okIds.includes(it.id));
+        okIds.forEach(id => { const cb = document.querySelector(`.sub_checkbox[value="${id}"]`); if (cb) cb.checked = false; });
+        renderModalList();
+        if (failNos.length) {
+            beep(false);
+            toast(`✅ ${okInputs.length}件保存\n❌ ${failNos.length}件失敗（リストに残しています）\n${[...new Set(failNos)].join(', ')}`, 'err', 6000);
+        } else {
+            beep(true);
+            toast(`✅ ${okInputs.length}件保存・印刷しました`);
+        }
 
         modal.save.disabled = false;
         modal.save.innerHTML = originalBtnText;
-        updateLocationPickerStatus();
+        updateSaveCount();
+        lastRenderedLocsKey = '';
+        initLocationTrackingSync(true); // 빈 로케이션 최신화
+        const ms = document.getElementById('modal-search-input'); if (ms) ms.focus();
     };
 
     // [이벤트 연동 완료]: 일괄 목록 비우기 버튼 활성화 매칭
     modal.clear.onclick = () => {
-        if (confirm("一括編集リストの全項目をクリアしますか？")) {
+        if (!hasUnsavedChanges() || confirm("保存していない変更があります。リストをクリアしますか？")) {
             selectedOrder = [];
             // 메인 페이지 of 모든 체크박스 해제
             document.querySelectorAll('.sub_checkbox').forEach(cb => cb.checked = false);
@@ -1775,12 +1971,10 @@
         }
     };
 
+    // [v9.0] 닫기: 확인창 없이 닫고, 저장한 게 있으면 자동 새로고침
     modal.close.onclick = () => {
-        if (confirm("ページを再読み込みしてメイン画面のデータを更新しますか？")) {
-            location.reload();
-        } else {
-            modal.overlay.style.display = 'none';
-        }
+        if (hasUnsavedChanges() && !confirm('保存していない変更があります。閉じますか？')) return;
+        closeModal();
     };
 
     // [안전장치 추가]: 메인 페이지 테이블에서 체크박스 수동 체크 시에도 동적으로 selectedOrder 클릭 순서 및 로케이션 유지
@@ -1820,5 +2014,7 @@
     initShippingSync();
     initLocationTrackingSync();
     setInterval(initShippingSync, 120000);
+
+    } // __main
 
 })();
