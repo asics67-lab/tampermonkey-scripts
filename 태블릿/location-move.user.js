@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [物流] ロケーション移動（一括編集・印刷）
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      9.6
+// @version      9.7
 // @description  入荷トラッキング画面：ロケーション一括移動・ラベル印刷。v9.0 スキャンだけで追加・ロケーションスキャン指定・確認ダイアログ削減・タブレット対応
 // @author       物流チーム
 // @match        https://www.platform.co.jp/admin/store/trackingno*
@@ -296,7 +296,7 @@
         const tNo = String(tLink.textContent || '').replace(/\s+/g, '').trim();
         const loc = String(locCell.textContent || '').replace(/\s+/g, ' ').trim();
         const locId = cb.value;
-        const details = getLabelPrintData(locId, tNo, loc);
+        const details = getLabelPrintData(locId, tNo, loc, row);
         return {
             id: locId, no: tNo, loc: loc,
             customerNo: details.customerNo, stockDate: details.stockDate, memo: details.memo,
@@ -749,22 +749,25 @@
     };
 
     // [유실 복원 모듈 2]: 로컬 데이터 및 라벨 데이터 추출용 고도화 헬퍼 함수 완벽 재수립
-    function getLabelPrintData(locId, trackingNo, location) {
-        let row = null;
-        document.querySelectorAll('.sub_checkbox').forEach(cb => {
-            if (cb.value === locId) {
-                row = cb.closest('tr');
-            }
-        });
+    function getLabelPrintData(locId, trackingNo, location, srcRow) {
+        // [v9.7] 다른 페이지/서버검색에서 가져온 행은 현재 화면에 없으므로 직접 넘겨받은 행(srcRow)을 우선 사용
+        let row = srcRow || null;
+        if (!row) {
+            document.querySelectorAll('.sub_checkbox').forEach(cb => {
+                if (cb.value === locId) {
+                    row = cb.closest('tr');
+                }
+            });
+        }
 
         let customerNo = '1204';
         let stockDate = new Date().toISOString().split('T')[0];
         let memo = '';
-        let userNo = '1219';
+        let userNo = ''; // [v9.7] 고정값 1219 제거 — 회원번호를 못 찾으면 라벨에 '?' 표시
         let matchedLHList = [];
 
         if (row) {
-            const memberText = (row.cells && row.cells[2]) ? row.cells[2].innerText.trim() : '';
+            const memberText = (row.cells && row.cells[2]) ? String(row.cells[2].textContent || '').trim() : '';
             const match = memberText.match(/^(\d+)/);
             if (match) {
                 customerNo = match[1];
@@ -776,11 +779,11 @@
                 stockDate = dateText;
             }
 
-            memo = (row.cells && row.cells[9]) ? row.cells[9].innerText.trim() : '';
+            memo = (row.cells && row.cells[9]) ? String(row.cells[9].textContent || '').trim() : '';
 
             if (row.cells) {
                 Array.from(row.cells).forEach(cell => {
-                    const matchLH = cell.innerText.trim().match(/(LH|LS|OH)\d+/i);
+                    const matchLH = String(cell.textContent || '').trim().match(/(LH|LS|OH)\d+/i);
                     if (matchLH) {
                         matchedLHList.push(matchLH[0].toUpperCase());
                     }
@@ -910,7 +913,7 @@
                                     <span class="box-num">(${label.boxIndex})</span>
                                 </div>
                                 <div class="footer-info" style="margin-top: 1mm;">
-                                    <span style="font-size: 18px; font-weight: 900; color: #000; display: block; line-height: 1;">ID: ${label.userNo}</span>
+                                    <span style="font-size: 18px; font-weight: 900; color: #000; display: block; line-height: 1;">ID: ${label.userNo || '?'}</span>
                                 </div>
                             </div>
                             <div class="bottom-right">
