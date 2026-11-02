@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [관리] 재고관리 통합 도구 (통관방식조회 + 다나오로시 + FL로케이션현황)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.6.0
+// @version      1.6.1
 // @description  재고관리(settlement/stock) 및 로케이션 조회 화면 통합본. 원본: 재고관리 통관방식 조회 v6.0(구글시트 공유) + 구매대행 다나오로시 출력본 v24.1(엑셀 합산/구분선 버그 수정) + FL 로케이션 사용 현황 v11.5
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/settlement/stock*
@@ -95,6 +95,11 @@
  *  2) 화면을 열 때 구글 시트 결과를 먼저 받아와 표시 (5분마다 갱신)
  *  3) 공유 주소는 PC마다 처음 한 번 입력 (Tampermonkey 메뉴 "통관방식 공유 시트 주소 설정"으로 변경 가능)
  *     공유 주소를 입력하지 않으면 예전처럼 그 PC에만 저장
+ *
+ *  v1.6.1 수정 사항
+ *  - [전체 미리 조회]가 재고 목록 수집 단계에서 실패하던 문제 수정
+ *    원인: 재고관리 화면은 1000건 페이지 응답이 1분을 넘겨 시간초과 → 100건씩, 4페이지 동시에 받도록 변경
+ *    진행 표시: "재고 목록 수집 중... N / 전체페이지"
  * ============================================================
  */
 
@@ -531,35 +536,61 @@
         if (b && !b.disabled) b.innerHTML = `<i class="ti ti-database me-1"></i>전체 미리 조회 (저장 ${cacheCountLabel()}건)`;
     }
 
-    // 재고관리 전체 페이지에서 JAN 모으기 (검색 조건 무시, 1000건씩)
+    // 재고관리 전체 페이지에서 JAN 모으기
+    // [v1.6.1] 1000건 페이지는 서버 응답이 1분을 넘겨 실패 → 100건씩, 4페이지 동시에 받기
     async function collectAllStockJans(setLabel) {
+        const PAGE_SIZE = 100;
+        const PARALLEL = 4;
         const jans = new Set();
-        const PAGE_SIZE = 1000;
-        for (let page = 1; page <= 200; page++) {
-            setLabel(`재고 목록 수집 중... ${page}페이지`);
-            const url = location.origin + location.pathname + `?pagesize=${PAGE_SIZE}&page=${page}`;
-            let html;
-            try {
-                html = await requestUrl(url);
-            } catch (e) {
-                try { html = await requestUrl(url); } catch (e2) {
-                    throw new Error(`${page}페이지 수집 실패`);
-                }
-            }
+
+        const pageUrl = page => location.origin + location.pathname + `?pagesize=${PAGE_SIZE}&page=${page}`;
+
+        function parseStockPage(html) {
             const doc = new DOMParser().parseFromString(html, 'text/html');
             const table = findJanTable(doc);
-            if (!table) break;
-            const janIndex = getJanIndex(table);
-            const rows = table.querySelectorAll('tbody tr');
-            let added = 0;
-            rows.forEach(row => {
-                const cells = row.querySelectorAll('td');
-                if (cells.length <= janIndex) return;
-                const jan = cells[janIndex].textContent.trim();
-                if (jan) { jans.add(jan); added++; }
-            });
-            if (added === 0 || rows.length < PAGE_SIZE) break;
+            const totalText = doc.querySelector('.text-start small')?.textContent || '';
+            const m = totalText.replace(/,/g, '').match(/(\d+)\s*건/);
+            const list = [];
+            if (table) {
+                const janIndex = getJanIndex(table);
+                table.querySelectorAll('tbody tr').forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length <= janIndex) return;
+                    const jan = cells[janIndex].textContent.trim();
+                    if (jan) list.push(jan);
+                });
+            }
+            return { total: m ? Number(m[1]) : null, list };
         }
+
+        async function getPage(page) {
+            for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                    return parseStockPage(await requestUrl(pageUrl(page)));
+                } catch (e) {
+                    await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+                }
+            }
+            throw new Error(`${page}페이지 수집 실패`);
+        }
+
+        setLabel('재고 목록 수집 중... 1페이지');
+        const first = await getPage(1);
+        first.list.forEach(j => jans.add(j));
+        const totalPages = first.total ? Math.ceil(first.total / PAGE_SIZE) : 1;
+
+        const pages = [];
+        for (let p = 2; p <= totalPages; p++) pages.push(p);
+        let done = 1;
+        setLabel(`재고 목록 수집 중... ${done} / ${totalPages}페이지`);
+
+        await runQueue(pages, PARALLEL, async function (page) {
+            const r = await getPage(page);
+            r.list.forEach(j => jans.add(j));
+            done++;
+            setLabel(`재고 목록 수집 중... ${done} / ${totalPages}페이지`);
+        });
+
         return Array.from(jans);
     }
 
