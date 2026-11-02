@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 재고관리 통합 도구 (통관방식조회 + 다나오로시 + FL로케이션현황)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.5.0
-// @description  재고관리(settlement/stock) 및 로케이션 조회 화면 통합본. 원본: 재고관리 통관방식 조회 v5.0(기억형) + 구매대행 다나오로시 출력본 v24.1(엑셀 합산/구분선 버그 수정) + FL 로케이션 사용 현황 v11.5
+// @version      1.6.0
+// @description  재고관리(settlement/stock) 및 로케이션 조회 화면 통합본. 원본: 재고관리 통관방식 조회 v6.0(구글시트 공유) + 구매대행 다나오로시 출력본 v24.1(엑셀 합산/구분선 버그 수정) + FL 로케이션 사용 현황 v11.5
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/settlement/stock*
 // @match        https://platform.co.jp/admin/settlement/stock*
@@ -13,8 +13,11 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @connect      www.platform.co.jp
 // @connect      platform.co.jp
+// @connect      script.google.com
+// @connect      script.googleusercontent.com
 // @updateURL    https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/01-재고관리/stock-tools.user.js
 // @downloadURL  https://raw.githubusercontent.com/asics67-lab/tampermonkey-scripts/main/관리/01-재고관리/stock-tools.user.js
 // ==/UserScript==
@@ -86,11 +89,18 @@
  *  3) [전체 미리 조회] 버튼 추가: 재고관리 전체 페이지의 JAN을 모아 모르는 것만 미리 조회
  *     중간에 멈춰도 진행분은 저장되고, 다시 누르면 남은 것만 이어서 조회
  *  4) Shift + [통관 방식 조회]는 이제 "현재 화면의 JAN만" 새로 조회 (전체 저장분은 유지)
+ *
+ *  v1.6.0 수정 사항 ([블록 1] 통관방식 조회만 수정)
+ *  1) 조회 결과를 구글 시트("통관방식 공유")에 함께 저장 → 누가 조회하든 모든 PC가 같이 빨라짐
+ *  2) 화면을 열 때 구글 시트 결과를 먼저 받아와 표시 (5분마다 갱신)
+ *  3) 공유 주소는 PC마다 처음 한 번 입력 (Tampermonkey 메뉴 "통관방식 공유 시트 주소 설정"으로 변경 가능)
+ *     공유 주소를 입력하지 않으면 예전처럼 그 PC에만 저장
  * ============================================================
  */
 
 /* ------------------------------------------------------------
- * [블록 1] 재고관리 통관방식 조회 (기억형) v5.0
+ * [블록 1] 재고관리 통관방식 조회 (구글시트 공유형) v6.0
+ *  - 조회 결과를 구글 시트에 함께 저장 → 한 사람이 조회하면 모든 PC에서 즉시 표시
  *  - 통관방식은 입고 때 정해지면 거의 바뀌지 않으므로, 한 번 조회한 결과를 PC에 30일 저장
  *  - [통관 방식 조회] : 현재 화면에서 "아직 모르는 JAN"만 조회 → 대부분 즉시 표시
  *  - [전체 미리 조회] : 재고관리 전체 페이지의 JAN을 모아 모르는 것만 미리 조회 (퇴근 전 1회 권장)
@@ -136,13 +146,116 @@
         memCache.set(janCode, status);
         // 확정된 결과(사업자/개인)만 PC에 저장. 미정·오류는 다음에 다시 조회
         if (status.includes('사업자') || status.includes('개인')) {
-            diskCache[janCode] = { s: status, t: Date.now() };
+            const t = Date.now();
+            diskCache[janCode] = { s: status, t: t };
+            pendingPush.set(janCode, { jan: janCode, s: status, t: t });
         }
     }
 
     function forget(janCode) {
         memCache.delete(janCode);
         delete diskCache[janCode];
+    }
+
+    /* ---------- 구글 시트 공유 저장소 ---------- */
+    const SHARE_URL_KEY = 'clearanceShareUrl';
+    const SHARE_PULL_KEY = 'clearanceSharePulledAt';
+    const PULL_INTERVAL = 5 * 60 * 1000; // 5분
+    const pendingPush = new Map();       // janCode -> { jan, s, t }
+
+    function getShareUrl() {
+        return GM_getValue(SHARE_URL_KEY, '') || '';
+    }
+
+    function askShareUrl() {
+        const cur = getShareUrl();
+        const v = prompt(
+            '통관방식 공유 시트 주소를 붙여 넣어 주세요.\n' +
+            '(https://script.google.com/macros/s/.../exec?key=... 형태)\n\n' +
+            '비워 두고 확인을 누르면 공유 없이 이 PC에만 저장합니다.', cur);
+        if (v === null) return cur;
+        const url = v.trim();
+        if (url && !/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec\?key=.+/.test(url)) {
+            alert('주소 형식이 맞지 않습니다. 웹 앱 URL 뒤에 ?key=... 가 붙어 있는지 확인해 주세요.');
+            return cur;
+        }
+        GM_setValue(SHARE_URL_KEY, url);
+        GM_setValue(SHARE_PULL_KEY, 0);
+        return url;
+    }
+
+    // 처음 한 번만 물어봄 (취소/빈칸이면 '-'로 기록해 다시 묻지 않음)
+    function ensureShareUrl() {
+        const cur = getShareUrl();
+        if (cur) return cur === '-' ? '' : cur;
+        const url = askShareUrl();
+        if (!url) GM_setValue(SHARE_URL_KEY, '-');
+        return url;
+    }
+
+    function shareRequest(method, payload) {
+        const url = getShareUrl();
+        if (!url || url === '-') return Promise.resolve(null);
+        return new Promise(resolve => {
+            GM_xmlhttpRequest({
+                method: method,
+                url: url,
+                timeout: 60000,
+                headers: method === 'POST' ? { 'Content-Type': 'text/plain;charset=utf-8' } : {},
+                data: payload ? JSON.stringify(payload) : undefined,
+                onload: r => {
+                    try {
+                        const j = JSON.parse(r.responseText);
+                        if (!j.ok) console.warn('[통관조회] 공유 시트 응답 오류', j);
+                        resolve(j.ok ? j : null);
+                    } catch (e) {
+                        console.warn('[통관조회] 공유 시트 응답을 읽지 못함 (웹 앱 배포/권한 확인)', r.status);
+                        resolve(null);
+                    }
+                },
+                onerror: () => resolve(null),
+                ontimeout: () => resolve(null)
+            });
+        });
+    }
+
+    // 구글 시트 → 이 PC (더 최신인 것만 반영)
+    async function pullShared(force) {
+        const last = Number(GM_getValue(SHARE_PULL_KEY, 0)) || 0;
+        if (!force && Date.now() - last < PULL_INTERVAL) return 0;
+        const j = await shareRequest('GET');
+        if (!j || !j.data) return 0;
+        let merged = 0;
+        const now = Date.now();
+        Object.keys(j.data).forEach(jan => {
+            const [st, t] = j.data[jan];
+            if (!st || now - t > CACHE_TTL) return;
+            const local = diskCache[jan];
+            if (!local || local.t < t) {
+                diskCache[jan] = { s: st, t: t };
+                memCache.delete(jan);
+                merged++;
+            }
+        });
+        GM_setValue(SHARE_PULL_KEY, now);
+        saveDiskCache();
+        console.log(`[통관조회] 공유 시트에서 ${Object.keys(j.data).length}건 받음 (새로 반영 ${merged}건)`);
+        return merged;
+    }
+
+    // 이 PC → 구글 시트 (새로 조회한 확정 결과만, 300건씩)
+    async function pushShared() {
+        if (!pendingPush.size) return;
+        const items = Array.from(pendingPush.values());
+        pendingPush.clear();
+        for (let i = 0; i < items.length; i += 300) {
+            const chunk = items.slice(i, i + 300);
+            const j = await shareRequest('POST', { items: chunk });
+            if (!j) {
+                // 실패분은 다음 기회에 다시 올림
+                chunk.forEach(it => pendingPush.set(it.jan, it));
+            }
+        }
     }
 
     function findJanTable(root) {
@@ -342,10 +455,14 @@
             }
             done++;
             onProgress(done, bases.length);
-            if (done % 50 === 0) saveDiskCache(); // 중간에 창을 닫아도 진행분은 남도록
+            if (done % 50 === 0) {           // 중간에 창을 닫아도 진행분은 남도록
+                saveDiskCache();
+                pushShared();
+            }
         });
 
         saveDiskCache();
+        await pushShared();
         return bases.length;
     }
 
@@ -360,8 +477,10 @@
         busy = true;
         if (button) {
             button.disabled = true;
-            button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>조회 준비 중...';
+            button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>공유 시트 확인 중...';
         }
+        ensureShareUrl();
+        await pullShared(false);
 
         // JAN → 표시할 칸들
         const janMap = new Map();
@@ -454,6 +573,9 @@
         const t0 = Date.now();
 
         try {
+            ensureShareUrl();
+            setLabel('공유 시트 받는 중...');
+            await pullShared(true);
             const allJans = await collectAllStockJans(setLabel);
             const unknown = allJans.filter(j => !getCached(j));
 
@@ -479,8 +601,28 @@
         busy = false;
     }
 
+    function refillFromCache() {
+        document.querySelectorAll('.clearance-status-td').forEach(td => {
+            if (td.querySelector('.spinner-border')) return;
+            const row = td.parentNode;
+            const table = getStockTable();
+            if (!table || !row) return;
+            const janIndex = getJanIndex(table);
+            const cells = Array.from(row.querySelectorAll('td')).filter(c => c !== td);
+            const jan = cells[janIndex] ? cells[janIndex].textContent.trim() : '';
+            const cached = jan && getCached(jan);
+            if (cached) renderStatus(td, cached);
+        });
+        refreshPrefetchLabel();
+    }
+
     function boot() {
+        GM_registerMenuCommand('통관방식 공유 시트 주소 설정', () => {
+            askShareUrl();
+            pullShared(true).then(refillFromCache);
+        });
         init();
+        pullShared(false).then(n => { if (n) refillFromCache(); });
         const observer = new MutationObserver(function () {
             if (!document.getElementById('fetch-clearance-btn')) init();
         });
