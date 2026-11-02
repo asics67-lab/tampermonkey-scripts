@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 재고관리 통합 도구 (통관방식조회 + 다나오로시 + FL로케이션현황)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.4.0
-// @description  재고관리(settlement/stock) 및 로케이션 조회 화면 통합본. 원본: 재고관리 통관방식 조회 v4.0(고속형) + 구매대행 다나오로시 출력본 v24.1(엑셀 합산/구분선 버그 수정) + FL 로케이션 사용 현황 v11.5
+// @version      1.5.0
+// @description  재고관리(settlement/stock) 및 로케이션 조회 화면 통합본. 원본: 재고관리 통관방식 조회 v5.0(기억형) + 구매대행 다나오로시 출력본 v24.1(엑셀 합산/구분선 버그 수정) + FL 로케이션 사용 현황 v11.5
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/settlement/stock*
 // @match        https://platform.co.jp/admin/settlement/stock*
@@ -79,25 +79,33 @@
  *  4) 확정 결과(사업자/개인)를 PC에 12시간 저장 → 다음 페이지·새로고침 시 버튼 안 눌러도 즉시 표시
  *     Shift + 버튼 클릭 = 저장된 결과 지우고 새로 조회
  *  5) 완료 시 버튼에 걸린 시간(초) 표시
+ *
+ *  v1.5.0 수정 사항 ([블록 1] 통관방식 조회만 수정)
+ *  1) 조회 결과 저장 기간 12시간 → 30일 (통관방식은 입고 때 정해지면 거의 안 바뀜)
+ *  2) [통관 방식 조회]는 아직 모르는 JAN만 조회 → 대부분 즉시 표시
+ *  3) [전체 미리 조회] 버튼 추가: 재고관리 전체 페이지의 JAN을 모아 모르는 것만 미리 조회
+ *     중간에 멈춰도 진행분은 저장되고, 다시 누르면 남은 것만 이어서 조회
+ *  4) Shift + [통관 방식 조회]는 이제 "현재 화면의 JAN만" 새로 조회 (전체 저장분은 유지)
  * ============================================================
  */
 
 /* ------------------------------------------------------------
- * [블록 1] 재고관리 통관방식 조회 (고속형) v4.0
- *  - 같은 기본 JAN(-1, -A, -H 등 붙은 것 포함)은 검색 1번으로 한꺼번에 처리
- *  - '미정' 상품을 쓸데없이 2번 조회하던 재시도 제거 (네트워크 오류일 때만 재시도)
- *  - 동시 조회 3개 → 6개
- *  - 조회 결과를 PC에 12시간 저장 → 다음 페이지/새로고침 시 즉시 표시
- *    (Shift 누른 채 버튼 클릭 = 저장된 결과 무시하고 새로 조회)
+ * [블록 1] 재고관리 통관방식 조회 (기억형) v5.0
+ *  - 통관방식은 입고 때 정해지면 거의 바뀌지 않으므로, 한 번 조회한 결과를 PC에 30일 저장
+ *  - [통관 방식 조회] : 현재 화면에서 "아직 모르는 JAN"만 조회 → 대부분 즉시 표시
+ *  - [전체 미리 조회] : 재고관리 전체 페이지의 JAN을 모아 모르는 것만 미리 조회 (퇴근 전 1회 권장)
+ *  - Shift + [통관 방식 조회] : 현재 화면 JAN만 저장 결과 무시하고 새로 조회 (통관방식 수정 시)
+ *  - 같은 기본 JAN(-1, -A, -H 등)은 검색 1번으로 처리, 동시 조회 6개
  * ------------------------------------------------------------ */
 (function () {
     'use strict';
 
     const CONCURRENCY = 6;
     const CACHE_KEY = 'clearanceCache_v1';
-    const CACHE_TTL = 12 * 60 * 60 * 1000; // 12시간
-    const memCache = new Map();             // janCode -> status (이번 화면에서만)
+    const CACHE_TTL = 30 * 24 * 60 * 60 * 1000; // 30일
+    const memCache = new Map();             // janCode -> status (이번 화면에서만, 미정 포함)
     let diskCache = loadDiskCache();        // janCode -> { s: status, t: 저장시각 }
+    let busy = false;
 
     function loadDiskCache() {
         try {
@@ -132,17 +140,22 @@
         }
     }
 
-    function getStockTable() {
-        const tables = document.querySelectorAll('table');
-        for (const table of tables) {
-            const ths = table.querySelectorAll('thead th');
-            for (const th of ths) {
-                if (th.textContent.trim() === 'JAN CODE') {
-                    return table;
-                }
+    function forget(janCode) {
+        memCache.delete(janCode);
+        delete diskCache[janCode];
+    }
+
+    function findJanTable(root) {
+        for (const table of root.querySelectorAll('table')) {
+            for (const th of table.querySelectorAll('thead th')) {
+                if (th.textContent.trim() === 'JAN CODE') return table;
             }
         }
         return null;
+    }
+
+    function getStockTable() {
+        return findJanTable(document);
     }
 
     function getJanIndex(table) {
@@ -151,6 +164,20 @@
             if (th.textContent.trim() === 'JAN CODE') janIndex = index;
         });
         return janIndex;
+    }
+
+    function makeButton(id, html, title) {
+        const b = document.createElement('button');
+        b.id = id;
+        b.type = 'button';
+        b.className = 'btn btn-primary btn-sm waves-effect flex-fill flex-sm-grow-0 ms-2';
+        if (title) b.title = title;
+        b.innerHTML = html;
+        return b;
+    }
+
+    function cacheCountLabel() {
+        return Object.keys(diskCache).length.toLocaleString();
     }
 
     function init() {
@@ -169,8 +196,7 @@
             janHeader.parentNode.insertBefore(th, janHeader.nextSibling);
         }
 
-        const rows = table.querySelectorAll('tbody tr');
-        rows.forEach(row => {
+        table.querySelectorAll('tbody tr').forEach(row => {
             if (row.querySelector('.clearance-status-td')) return;
             const cells = row.querySelectorAll('td');
             if (cells.length <= janIndex) return;
@@ -178,7 +204,6 @@
             const janCell = cells[janIndex];
             const td = document.createElement('td');
             td.className = 'clearance-status-td';
-
             // 저장된 결과가 있으면 버튼 누르기 전에 바로 표시
             const cached = getCached(janCell.textContent.trim());
             if (cached) {
@@ -196,15 +221,18 @@
         }
         if (document.getElementById('fetch-clearance-btn')) return;
 
-        const button = document.createElement('button');
-        button.id = 'fetch-clearance-btn';
-        button.type = 'button';
-        button.className = 'btn btn-primary btn-sm waves-effect flex-fill flex-sm-grow-0 ms-2';
-        button.title = 'Shift를 누른 채 클릭하면 저장된 결과를 무시하고 새로 조회합니다';
-        button.innerHTML = '<i class="ti ti-scan me-1"></i>통관 방식 조회';
+        const button = makeButton('fetch-clearance-btn',
+            '<i class="ti ti-scan me-1"></i>통관 방식 조회',
+            '아직 모르는 JAN만 조회합니다. Shift를 누른 채 클릭하면 이 화면의 JAN을 새로 조회합니다');
+        const preBtn = makeButton('prefetch-clearance-btn',
+            `<i class="ti ti-database me-1"></i>전체 미리 조회 (저장 ${cacheCountLabel()}건)`,
+            '재고관리 전체 페이지의 JAN 중 아직 모르는 것만 미리 조회해 저장합니다 (퇴근 전 1회 권장)');
+        preBtn.classList.replace('btn-primary', 'btn-outline-primary');
 
         excelBtn.parentNode.appendChild(button);
+        excelBtn.parentNode.appendChild(preBtn);
         button.addEventListener('click', e => startFetching(e.shiftKey));
+        preBtn.addEventListener('click', prefetchAll);
         console.log('[통관조회] 버튼 생성 완료');
     }
 
@@ -227,13 +255,12 @@
         return result;
     }
 
-    function requestPage(keyword) {
-        const url = location.origin + '/admin/store/jancode?target=2&keyword=' + encodeURIComponent(keyword);
+    function requestUrl(url) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: url,
-                timeout: 20000,
+                timeout: 60000,
                 onload: r => (r.status >= 200 && r.status < 400) ? resolve(r.responseText) : reject(new Error('HTTP ' + r.status)),
                 onerror: () => reject(new Error('network')),
                 ontimeout: () => reject(new Error('timeout'))
@@ -243,12 +270,13 @@
 
     // 네트워크 오류·시간초과일 때만 1번 재시도
     async function searchKeyword(keyword) {
+        const url = location.origin + '/admin/store/jancode?target=2&keyword=' + encodeURIComponent(keyword);
         try {
-            return parseResultPage(await requestPage(keyword));
+            return parseResultPage(await requestUrl(url));
         } catch (e) {
             await new Promise(r => setTimeout(r, 500));
             try {
-                return parseResultPage(await requestPage(keyword));
+                return parseResultPage(await requestUrl(url));
             } catch (e2) {
                 return e2.message === 'timeout' ? '시간초과' : '실패';
             }
@@ -280,21 +308,56 @@
         await Promise.all(workers);
     }
 
+    // 모르는 JAN 목록을 기본 JAN 단위로 묶어서 조회. onResult(janCode, status), onProgress(done, total)
+    async function lookupJans(janCodes, onResult, onProgress) {
+        const groups = new Map();
+        janCodes.forEach(janCode => {
+            const base = janCode.split(/[- ]+/)[0];
+            if (!base) { onResult(janCode, '무효'); return; }
+            if (!groups.has(base)) groups.set(base, []);
+            groups.get(base).push(janCode);
+        });
+
+        const bases = Array.from(groups.keys());
+        let done = 0;
+        onProgress(0, bases.length);
+
+        await runQueue(bases, CONCURRENCY, async function (base) {
+            const found = await searchKeyword(base);
+            for (const janCode of groups.get(base)) {
+                let status;
+                if (typeof found === 'string') {
+                    status = found; // 실패/시간초과
+                } else if (found.has(janCode)) {
+                    status = found.get(janCode);
+                } else if (janCode !== base) {
+                    // 기본 JAN 검색 결과(1페이지)에 없는 변형 JAN만 개별 검색
+                    const single = await searchKeyword(janCode);
+                    status = typeof single === 'string' ? single : (single.get(janCode) || '미정');
+                } else {
+                    status = '미정';
+                }
+                setCached(janCode, status);
+                onResult(janCode, status);
+            }
+            done++;
+            onProgress(done, bases.length);
+            if (done % 50 === 0) saveDiskCache(); // 중간에 창을 닫아도 진행분은 남도록
+        });
+
+        saveDiskCache();
+        return bases.length;
+    }
+
     async function startFetching(forceRefresh) {
+        if (busy) return;
         const button = document.getElementById('fetch-clearance-btn');
         const table = getStockTable();
         if (!table) return;
-
-        if (forceRefresh) {
-            memCache.clear();
-            diskCache = {};
-            saveDiskCache();
-        }
-
-        // 통관 열이 끼어들기 전 원래 JAN 위치 (헤더 기준)
         const janIndex = getJanIndex(table);
         if (janIndex === -1) return;
 
+        busy = true;
         if (button) {
             button.disabled = true;
             button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>조회 준비 중...';
@@ -312,72 +375,108 @@
             janMap.get(janCode).push(resultCell);
         });
 
-        // 저장된 결과는 바로 표시, 나머지만 기본 JAN 단위로 묶어서 조회
-        const groups = new Map(); // 기본JAN -> [janCode...]
-        let fromCache = 0;
+        const unknown = [];
         janMap.forEach((cells, janCode) => {
+            if (forceRefresh) forget(janCode);
             const cached = getCached(janCode);
             if (cached) {
                 cells.forEach(td => renderStatus(td, cached));
-                fromCache++;
-                return;
+            } else {
+                unknown.push(janCode);
+                cells.forEach(td => {
+                    td.innerHTML = '<span class="spinner-border spinner-border-sm text-primary" style="width:10px;height:10px;"></span>';
+                });
             }
-            const base = janCode.split(/[- ]+/)[0];
-            if (!base) {
-                cells.forEach(td => renderStatus(td, '무효'));
-                return;
-            }
-            cells.forEach(td => {
-                td.innerHTML = '<span class="spinner-border spinner-border-sm text-primary" style="width:10px;height:10px;"></span>';
-            });
-            if (!groups.has(base)) groups.set(base, []);
-            groups.get(base).push(janCode);
         });
 
-        const bases = Array.from(groups.keys());
-        const total = bases.length;
-        let completed = 0;
         const t0 = Date.now();
-
-        const updateLabel = () => {
-            if (button) button.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>조회 중... ${completed} / ${total}`;
-        };
-        updateLabel();
-
-        await runQueue(bases, CONCURRENCY, async function (base) {
-            const janList = groups.get(base);
-            let found = await searchKeyword(base);
-
-            // 기본 JAN 검색 결과에 없는 변형 JAN만 개별 검색 (검색결과가 한 페이지를 넘는 경우 대비)
-            for (const janCode of janList) {
-                let status;
-                if (typeof found === 'string') {
-                    status = found; // 실패/시간초과
-                } else if (found.has(janCode)) {
-                    status = found.get(janCode);
-                } else if (janCode !== base) {
-                    const single = await searchKeyword(janCode);
-                    status = typeof single === 'string' ? single : (single.get(janCode) || '미정');
-                } else {
-                    status = '미정';
-                }
-                setCached(janCode, status);
-                (janMap.get(janCode) || []).forEach(td => renderStatus(td, status));
-            }
-
-            completed++;
-            updateLabel();
-        });
-
-        saveDiskCache();
+        await lookupJans(unknown,
+            (janCode, status) => (janMap.get(janCode) || []).forEach(td => renderStatus(td, status)),
+            (done, total) => {
+                if (button) button.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>새 JAN 조회 중... ${done} / ${total}`;
+            });
 
         const sec = ((Date.now() - t0) / 1000).toFixed(1);
-        console.log(`[통관조회] 검색 ${total}회 / 저장된 결과 사용 ${fromCache}건 / ${sec}초`);
+        console.log(`[통관조회] 화면 JAN ${janMap.size}건 중 새로 조회 ${unknown.length}건 / ${sec}초`);
+        refreshPrefetchLabel();
 
         if (button) {
             button.disabled = false;
-            button.innerHTML = `<i class="ti ti-check me-1"></i>조회 완료 (${sec}초)`;
+            button.innerHTML = `<i class="ti ti-check me-1"></i>조회 완료 (새로 ${unknown.length}건 · ${sec}초)`;
         }
+        busy = false;
+    }
+
+    function refreshPrefetchLabel() {
+        const b = document.getElementById('prefetch-clearance-btn');
+        if (b && !b.disabled) b.innerHTML = `<i class="ti ti-database me-1"></i>전체 미리 조회 (저장 ${cacheCountLabel()}건)`;
+    }
+
+    // 재고관리 전체 페이지에서 JAN 모으기 (검색 조건 무시, 1000건씩)
+    async function collectAllStockJans(setLabel) {
+        const jans = new Set();
+        const PAGE_SIZE = 1000;
+        for (let page = 1; page <= 200; page++) {
+            setLabel(`재고 목록 수집 중... ${page}페이지`);
+            const url = location.origin + location.pathname + `?pagesize=${PAGE_SIZE}&page=${page}`;
+            let html;
+            try {
+                html = await requestUrl(url);
+            } catch (e) {
+                try { html = await requestUrl(url); } catch (e2) {
+                    throw new Error(`${page}페이지 수집 실패`);
+                }
+            }
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            const table = findJanTable(doc);
+            if (!table) break;
+            const janIndex = getJanIndex(table);
+            const rows = table.querySelectorAll('tbody tr');
+            let added = 0;
+            rows.forEach(row => {
+                const cells = row.querySelectorAll('td');
+                if (cells.length <= janIndex) return;
+                const jan = cells[janIndex].textContent.trim();
+                if (jan) { jans.add(jan); added++; }
+            });
+            if (added === 0 || rows.length < PAGE_SIZE) break;
+        }
+        return Array.from(jans);
+    }
+
+    async function prefetchAll() {
+        if (busy) return;
+        const b = document.getElementById('prefetch-clearance-btn');
+        const setLabel = text => { if (b) b.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${text}`; };
+
+        busy = true;
+        if (b) b.disabled = true;
+        const t0 = Date.now();
+
+        try {
+            const allJans = await collectAllStockJans(setLabel);
+            const unknown = allJans.filter(j => !getCached(j));
+
+            await lookupJans(unknown, () => {}, (done, total) => setLabel(`미리 조회 중... ${done} / ${total}`));
+
+            const min = ((Date.now() - t0) / 60000).toFixed(1);
+            console.log(`[통관조회] 전체 재고 JAN ${allJans.length}건 중 새로 조회 ${unknown.length}건 / ${min}분`);
+            if (b) {
+                b.disabled = false;
+                b.innerHTML = `<i class="ti ti-check me-1"></i>미리 조회 완료 (새로 ${unknown.length}건 · ${min}분) · 저장 ${cacheCountLabel()}건`;
+            }
+            // 현재 화면도 저장된 결과로 바로 채우기
+            document.querySelectorAll('.clearance-status-td').forEach(td => td.remove());
+            init();
+        } catch (e) {
+            console.error('[통관조회] 전체 미리 조회 실패', e);
+            saveDiskCache();
+            if (b) {
+                b.disabled = false;
+                b.innerHTML = `<i class="ti ti-alert-triangle me-1"></i>미리 조회 중단 (${e.message}) — 다시 누르면 이어서 진행`;
+            }
+        }
+        busy = false;
     }
 
     function boot() {
