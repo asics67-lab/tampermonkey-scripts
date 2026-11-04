@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [관리] 재고관리 통합 도구 (통관방식조회 + 다나오로시 + FL로케이션현황)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.6.1
+// @version      1.6.2
 // @description  재고관리(settlement/stock) 및 로케이션 조회 화면 통합본. 원본: 재고관리 통관방식 조회 v6.0(구글시트 공유) + 구매대행 다나오로시 출력본 v24.1(엑셀 합산/구분선 버그 수정) + FL 로케이션 사용 현황 v11.5
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/settlement/stock*
@@ -100,6 +100,10 @@
  *  - [전체 미리 조회]가 재고 목록 수집 단계에서 실패하던 문제 수정
  *    원인: 재고관리 화면은 1000건 페이지 응답이 1분을 넘겨 시간초과 → 100건씩, 4페이지 동시에 받도록 변경
  *    진행 표시: "재고 목록 수집 중... N / 전체페이지"
+ *
+ *  v1.6.2 수정 사항
+ *  - 공유 시트 응답이 오지 않으면 "공유 시트 받는 중..."에서 영원히 멈추던 문제 수정
+ *    → 25초 안에 응답이 없으면 공유 없이 다음 단계(재고 목록 수집)로 진행
  * ============================================================
  */
 
@@ -198,10 +202,22 @@
         return url;
     }
 
+    // [v1.6.2] Tampermonkey 권한 확인 대기 등으로 응답이 아예 안 오면 timeout이 안 걸리는 경우가 있어
+    //          25초 뒤에는 무조건 포기하고 다음 단계로 진행
+    let shareFailNotified = false;
     function shareRequest(method, payload) {
         const url = getShareUrl();
         if (!url || url === '-') return Promise.resolve(null);
-        return new Promise(resolve => {
+        const hardTimeout = new Promise(resolve => setTimeout(() => {
+            console.warn('[통관조회] 공유 시트 응답 없음 (25초) — Tampermonkey 권한 확인 창이 떠 있는지 확인');
+            if (!shareFailNotified) {
+                shareFailNotified = true;
+                const b = document.getElementById('prefetch-clearance-btn');
+                if (b) b.title = '공유 시트에 연결하지 못했습니다. Tampermonkey의 "크로스 오리진 접근" 허용 창을 확인해 주세요.';
+            }
+            resolve(null);
+        }, 25000));
+        return Promise.race([hardTimeout, new Promise(resolve => {
             GM_xmlhttpRequest({
                 method: method,
                 url: url,
@@ -218,10 +234,10 @@
                         resolve(null);
                     }
                 },
-                onerror: () => resolve(null),
+                onerror: e => { console.warn('[통관조회] 공유 시트 연결 오류', e && e.error); resolve(null); },
                 ontimeout: () => resolve(null)
             });
-        });
+        })]);
     }
 
     // 구글 시트 → 이 PC (더 최신인 것만 반영)
