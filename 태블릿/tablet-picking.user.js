@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [피킹] 태블릿 피킹 (タブレットピッキング)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.17.0
+// @version      1.18.0
 // @description  피킹리스트를 인쇄하지 않고 태블릿에서 바로 보면서 피킹. 출고건 선택 → 로케이션 순서로 합친 피킹 화면 → 탭/JAN 스캔으로 체크 → 완료 후 출고건별 仕分けリスト 인쇄.
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
@@ -548,9 +548,10 @@
                 const sets = {};
                 parseCsv(text).forEach(r => {
                     const jan = String(r[0] || '').replace(/\s/g, '').replace(/\.0+$/, '');
-                    const grade = String(r[1] || '').replace(/[-\s]/g, '').replace(/\.0+$/, '');
+                    let grade = String(r[1] || '').replace(/[-\s]/g, '').replace(/\.0+$/, '');
+                    if (grade === '0') grade = ''; // 기준등급 빈칸/0 = 메인 잔코드
                     const per = parseInt(String(r[2] || '').replace(/[^\d]/g, ''), 10);
-                    if (/^\d{8,14}$/.test(jan) && /^[0-9A-Za-z]+$/.test(grade) && per > 0) sets[jan] = { grade: grade, perSet: per };
+                    if (/^\d{8,14}$/.test(jan) && (grade === '' || /^[0-9A-Za-z]+$/.test(grade)) && per > 0) sets[jan] = { grade: grade, perSet: per };
                 });
                 kujiSheet = { sets: sets, error: '', at: Date.now(), loading: null };
             })
@@ -690,6 +691,7 @@
         return { pcs: pcs, half: false, unit: unit, sets: Math.floor(l.total / pcs), pieces: l.total, rem: l.total % pcs };
     }
     // 출고건 하나: 메인 잔코드가 없는 쿠지 묶음별 세트 계산
+    function gLabel(gr) { return gr === '' ? '메인 잔코드' : '-' + esc(gr); }
     function kujiInfoFor(b, oi) {
         const sets = kujiSets();
         const ls = b.lines.filter(l => l.oi === oi && l.isKuji);
@@ -697,7 +699,8 @@
         const subs = {};
         ls.forEach(l => {
             if (l.isMain) return;
-            const m = String(l.jan).trim().match(/^(\d{8,14})\s*-\s*([0-9A-Za-z]+)$/);
+            let m = String(l.jan).trim().match(/^(\d{8,14})\s*-\s*([0-9A-Za-z]+)$/);
+            if (!m) { const pm = String(l.jan).trim().match(/^(\d{8,14})$/); if (pm) m = [pm[0], pm[1], '']; } // 접미사 없는 메인 잔코드
             if (!m) return;
             const s = subs[m[1]] = subs[m[1]] || { name: l.name, grades: {} };
             s.grades[m[2]] = (s.grades[m[2]] || 0) + l.total;
@@ -706,9 +709,10 @@
         Object.keys(subs).forEach(base => {
             if (mains.has(base)) return;
             const s = subs[base], conf = sets[base];
+            if (Object.keys(s.grades).every(gk => gk === '')) return;
             const info = { base: base, name: s.name, grades: Object.keys(s.grades), conf: conf };
             if (!conf) info.status = 'unregistered';
-            else if (!s.grades[String(conf.grade)]) info.status = 'noref';
+            else if (s.grades[String(conf.grade)] === undefined) info.status = 'noref';
             else {
                 info.refQty = s.grades[String(conf.grade)];
                 info.sets = info.refQty / conf.perSet;
@@ -1296,9 +1300,9 @@
         return Object.keys(map).map(base => {
             const k = map[base];
             let cls = 'kb warn', body = '';
-            if (k.status === 'ok') { cls = 'kb'; body = `<span class="big">${k.sets}세트</span><span style="font-size:13px;font-weight:600;color:#444">(-${esc(k.conf.grade)} 기준 ${k.conf.perSet}개 = 1세트)</span>`; }
-            else if (k.status === 'odd') body = `<span class="big">${fmtSets(k.sets)}세트 ⚠ 수량 확인</span><span style="font-size:13px;font-weight:600;color:#444">(-${esc(k.conf.grade)} 지금 ${k.refQty}개 / 1세트 ${k.conf.perSet}개)</span>`;
-            else if (k.status === 'noref') body = `<span>기준 등급 -${esc(k.conf.grade)} 이(가) 목록에 없습니다 → 세트수를 확인해 주세요</span>`;
+            if (k.status === 'ok') { cls = 'kb'; body = `<span class="big">${k.sets}세트</span><span style="font-size:13px;font-weight:600;color:#444">(${gLabel(k.conf.grade)} 기준 ${k.conf.perSet}개 = 1세트)</span>`; }
+            else if (k.status === 'odd') body = `<span class="big">${fmtSets(k.sets)}세트 ⚠ 수량 확인</span><span style="font-size:13px;font-weight:600;color:#444">(${gLabel(k.conf.grade)} 지금 ${k.refQty}개 / 1세트 ${k.conf.perSet}개)</span>`;
+            else if (k.status === 'noref') body = `<span>기준 등급 ${gLabel(k.conf.grade)} 이(가) 목록에 없습니다 → 세트수를 확인해 주세요</span>`;
             else body = `<span>세트 기준 미등록</span><button data-ksheet="1" style="background:#e69500">📋 시트에 등록</button><button data-kreload="1" style="background:#0f766e">🔄 다시 읽기</button><button data-kreg="${esc(base)}" data-grades="${esc(k.grades.join(','))}">이 태블릿에 임시 등록</button>`;
             return `<div class="${cls}"><span>🎯 ${esc(k.name)} (${esc(base)}) :</span>${body}</div>`;
         }).join('') + (Object.keys(map).length && kujiSheet.error ? `<div class="kb warn" style="font-size:13px">⚠ 세트 기준 시트를 읽지 못했습니다 (${esc(kujiSheet.error)}) — 스크립트에 넣어 둔 기준·임시 등록만 사용 중</div>` : '');
@@ -1373,7 +1377,8 @@
             let rowCls = '';
             if (l.isMain && l.setDiv > 0) { qtyExtra = `<div class="st">(${Math.floor(l.total / l.setDiv)} set)</div>`; rowCls = ' main'; }
             else if (l.isKuji && !l.isMain && !l.isSub) {
-                const m = jan.trim().match(/^(\d{8,14})\s*-\s*([0-9A-Za-z]+)$/);
+                let m = jan.trim().match(/^(\d{8,14})\s*-\s*([0-9A-Za-z]+)$/);
+                if (!m) { const pm = jan.trim().match(/^(\d{8,14})$/); if (pm) m = [pm[0], pm[1], '']; }
                 const k = m ? kmap[m[1]] : null;
                 if (k && (k.status === 'ok' || k.status === 'odd') && String(k.conf.grade) === m[2]) { qtyExtra = `<div class="st">(${fmtSets(k.sets)} set)</div>`; rowCls = ' main'; }
             }
@@ -1442,7 +1447,8 @@
         const t = [];
         if (l.isMain && l.setDiv > 0) t.push(Math.floor(l.total / l.setDiv) + ' set');
         else if (l.isKuji && !l.isMain && !l.isSub) {
-            const m = String(l.jan).trim().match(/^(\d{8,14})\s*-\s*([0-9A-Za-z]+)$/);
+            let m = String(l.jan).trim().match(/^(\d{8,14})\s*-\s*([0-9A-Za-z]+)$/);
+            if (!m) { const pm = String(l.jan).trim().match(/^(\d{8,14})$/); if (pm) m = [pm[0], pm[1], '']; }
             const k = m ? kmap[m[1]] : null;
             if (k && (k.status === 'ok' || k.status === 'odd') && String(k.conf.grade) === m[2]) t.push(fmtSets(k.sets) + ' set');
         }
