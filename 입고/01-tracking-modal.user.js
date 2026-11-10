@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] 트래킹넘버 모달 통합 (마스터패치본 + 회원명고정 + 하이픈표시 + JAN강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.4.3
+// @version      1.4.4
 // @description  입고 처리 모달(trackingno) 및 라벨 인쇄(locationlabel) 화면 통합본. 원본: A-1-13(베이스) + A-1-2(회원명 고정) + A-1-3(하이픈 표시) + A-1-12 중 입고 JAN강조 발췌
 // @author       물류팀
 // @match        https://platform.aispel.com/admin/store/trackingno*
@@ -74,6 +74,12 @@
  *    흑백 프린터용으로 속이 빈 테두리 글씨를 라벨 뒤에 비스듬히 깔고, 업체명을 작게 함께 표시.
  *    스캔 입고 라벨과 목록 Print(재출력) 라벨 모두 적용. QR 부분은 흰 바탕이라 인식에 영향 없음.
  *    업체 추가/삭제는 아래 END_USER_COMPANIES 목록만 고치면 됨.
+ *
+ *  v1.4.4 수정 사항 (2026-11-10)
+ *  - 입고창 🗑 삭제 시 "서버와 통신하지 못했습니다"로 실패하던 문제 수정.
+ *    원인: 2026-11-09 사이트 업데이트로 삭제 서버(ajax_delete_trackingno)가
+ *          id 외에 tracking_no도 필수로 요구 → 스크립트는 id만 보내 422 오류.
+ *    해결: 줄의 트래킹번호를 함께 전송. 실패 시 상태코드·서버 메시지를 표시.
  *
  *  v1.3.3 수정 사항 (2026-10-07)
  *  - 합배송(트래킹 2개 이상이 한 출고번호로 묶인 건)인데도 라벨에 출고번호가 찍히던 문제 수정.
@@ -510,21 +516,39 @@
                 const $btn = $(this);
                 const id = $btn.attr('data-id') || $btn.data('id');
                 if (!id) return;
+                // [v1.4.4] 2026-11-09 사이트 업데이트 후 서버가 id와 함께 tracking_no도 필수로 요구함
+                //          (없으면 422 오류 → 삭제 실패). 줄에 저장된 트래킹번호를 같이 보냄.
+                const $tr = $btn.closest('tr');
+                let trackingNo = $tr.data('trackingno') || $tr.attr('data-trackingno') || '';
+                if (!trackingNo) trackingNo = ($tr.find('td').eq(4).text() || '').replace(/[^A-Za-z0-9]/g, '');
+                if (!trackingNo) { alert('삭제 실패: 이 줄의 Tracking No.를 찾지 못했습니다. 화면을 새로고침한 뒤 다시 시도하세요.'); return; }
                 if (!confirm('削除しますか？')) return;
                 const csrfToken = getCsrfToken();
                 $.ajax({
                     type: 'POST', url: window.location.origin + '/admin/store/ajax_delete_trackingno',
-                    data: { id: id, _token: csrfToken }, dataType: 'json',
+                    data: { id: id, tracking_no: String(trackingNo), _token: csrfToken }, dataType: 'json',
                     headers: { 'X-CSRF-TOKEN': csrfToken }
                 }).done(function(json) {
                     if (json && (!json.error_msg || json.error_msg === "")) {
-                        $btn.closest('tr').remove();
+                        $tr.remove();
                         initLocationTrackingSync();
-                    } else { alert(json.error_msg || "삭제 실패"); }
-                }).fail(function() {
+                    } else { alert((json && json.error_msg) || "삭제 실패"); }
+                }).fail(function(jqXHR) {
                     // [v1.3.2] 서버 삭제가 실패했는데 화면 줄만 지우면 "지워진 줄 알았는데 데이터는 남아 있는"
                     // 상태가 되므로, 줄은 그대로 두고 알립니다.
-                    alert('삭제 실패: 서버와 통신하지 못했습니다. 입고 데이터는 아직 남아 있습니다.\n다시 시도하세요.');
+                    // [v1.4.4] 원인 파악이 쉽도록 서버가 돌려준 상태코드·메시지를 함께 표시.
+                    const status = jqXHR && jqXHR.status;
+                    let detail = '';
+                    try {
+                        const j = jqXHR.responseJSON || JSON.parse(jqXHR.responseText || '{}');
+                        if (j.errors) detail = Object.values(j.errors).flat().join(' / ');
+                        else if (j.message) detail = j.message;
+                    } catch (_) {}
+                    let msg;
+                    if (!status) msg = '서버와 통신하지 못했습니다 (인터넷 연결 확인).';
+                    else if (status === 419) msg = '로그인 세션이 만료되었습니다. 화면을 새로고침(F5)한 뒤 다시 시도하세요.';
+                    else msg = `서버 오류 (${status})` + (detail ? `: ${detail}` : '');
+                    alert('삭제 실패: ' + msg + '\n입고 데이터는 아직 남아 있습니다.');
                 });
             });
         }
