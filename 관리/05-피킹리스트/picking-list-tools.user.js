@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [관리] 피킹리스트 인쇄 도구 (AISPEL 피킹리스트 V75.2)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.22.0
-// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정. v1.9.0: 속도 개선 - LH/OH 확인을 데이터 수집과 동시에 시작(수집 끝날 때까지 기다리지 않음), 동시 확인 3→4건(종합관리 검색 한도와 맞춤), 확인 중에도 인쇄 버튼을 누를 수 있게 변경(누르면 확인창), 걸린 시간을 콘솔에 기록. v1.9.1: 같은 상품이 따로 입고돼 같은 로케이션에 여러 건 있을 때 로케이션 개수가 1개로만 나오던 문제 수정(로케이션별 개수 합산, 예: Q19 : 2個). v1.10.0: 속도 개선 - 종합관리 조회는 무검품출하 출고건만 실행(중복 Tracking 경고만 인쇄). 일반 출고건의 같은 Tracking 묶음 표시는 제거(포장 화면 팝업에서 확인). v1.11.0: 아타리쿠지 세트 기준 구글시트(아타리쿠지_세트기준) 연결 - 태블릿 피킹과 같은 시트, 등급 -A 같은 영문 등급도 인식. v1.12.0: 세트 개수 표시 수정 - 포장 화면처럼 옵션1/옵션2를 읽음(옵션1=JAN이라 세트 정보가 안 나오던 문제), 1봉지40개입·1BOX 4PCS·6pcs·상품명 nP SET 표시, 세트 개수 미기재 경고. v1.13.0: 배송대행은 상품 정보 없이 Tracking번호·로케이션만 인쇄(Tracking 단위 체크), 오른쪽 위에 Tracking 개수 표시. v1.14.0: 배송대행 박스 수 표시 - 입고 처리 목록의 박스 수(그 출고번호 줄)를 Tracking별로 표시하고 오른쪽 위에 총 박스 수(아래 Tracking 건수), 박스 수만큼 체크칸. v1.15.0: 박스 수를 입고 처리 목록 조회 대신 로케이션 개수로 계산(추가 조회 없음, 실제 28개 Tracking에서 일치 확인). v1.16.0: 캡슐토이 세트는 파란색 표시 안 함(다른 세트상품만), 수량칸 아래 '×○pcs=○個' 표시 제거(잔코드 아래 옵션으로 확인). v1.16.1: -H(하프)는 수량칸 아래 '×○pcs=○個' 계속 표시, 잔코드 아래 옵션의 한국어 단위를 일본어로(1봉지30개입→1袋30個入). v1.17.0: 입고 담당자가 등록한 1세트 낱개수(구글시트 '세트낱개수' 탭)로 수량칸에 세트 수를 크게 표시(16個→1セット), 세트 배수가 아니면 ⚠端数 표시. v1.21.0: 같은 로케이션이 이어지면 JAN이 달라도 로케이션 칸을 하나로 묶어 표시(로케이션 순 정렬 기준도 개수 표기 빼고 로케이션 이름으로). v1.22.0: 아타리쿠지 세트기준 시트에서 기준등급을 빈칸(또는 0)으로 두면 접미사 없는 메인 잔코드 수량으로 세트수 계산.
+// @version      1.23.0
+// @description  포장/출고(shipping/packing) 화면에서 PICKING LIST 버튼 옆에 초광속 수집 버튼을 추가해 관리팀이 피킹리스트를 인쇄하는 도구. 원본: AISPEL 피킹리스트 v75.2(LH/OH 트래킹번호 미표시 수정). v1.1.0: 메인 잔코드가 빠진 아타리쿠지도 기준등급 수량으로 세트수 표시. v1.2.0: 세트 기준을 구글시트에서 읽어옴. v1.3.0: 잔코드-H(Half) 등 옵션에 PCS가 적힌 세트상품의 옵션·실제 개수 표시. v1.4.0: 같은 Tracking번호를 쓰는 LH/OH 출고건 목록(진행상태 포함)을 피킹리스트에 표시. v1.5.0: 인쇄되는 피킹리스트 문구를 일본어로 변경. v1.6.0: 무검품출하 출고건·무검품출하 Tracking 표시. v1.6.1: 무검품출하 Tracking 표시는 다른 출고요청과 중복될 때만. v1.7.0: 속도 개선(출고건 동시 조회, 같은 Tracking 종합관리 검색 1번만 실행). v1.8.0: 피킹리스트를 먼저 띄우고 LH/OH 같은 Tracking·무검품 확인은 뒤이어 채워 넣음(확인 끝날 때까지 인쇄 버튼 잠금). v1.8.1: 옛 피킹리스트(관리/03 packing-tools 안 V75.2)가 버튼을 먼저 차지해 느린 옛 방식으로 인쇄되던 문제 수정. v1.9.0: 속도 개선 - LH/OH 확인을 데이터 수집과 동시에 시작(수집 끝날 때까지 기다리지 않음), 동시 확인 3→4건(종합관리 검색 한도와 맞춤), 확인 중에도 인쇄 버튼을 누를 수 있게 변경(누르면 확인창), 걸린 시간을 콘솔에 기록. v1.9.1: 같은 상품이 따로 입고돼 같은 로케이션에 여러 건 있을 때 로케이션 개수가 1개로만 나오던 문제 수정(로케이션별 개수 합산, 예: Q19 : 2個). v1.10.0: 속도 개선 - 종합관리 조회는 무검품출하 출고건만 실행(중복 Tracking 경고만 인쇄). 일반 출고건의 같은 Tracking 묶음 표시는 제거(포장 화면 팝업에서 확인). v1.11.0: 아타리쿠지 세트 기준 구글시트(아타리쿠지_세트기준) 연결 - 태블릿 피킹과 같은 시트, 등급 -A 같은 영문 등급도 인식. v1.12.0: 세트 개수 표시 수정 - 포장 화면처럼 옵션1/옵션2를 읽음(옵션1=JAN이라 세트 정보가 안 나오던 문제), 1봉지40개입·1BOX 4PCS·6pcs·상품명 nP SET 표시, 세트 개수 미기재 경고. v1.13.0: 배송대행은 상품 정보 없이 Tracking번호·로케이션만 인쇄(Tracking 단위 체크), 오른쪽 위에 Tracking 개수 표시. v1.14.0: 배송대행 박스 수 표시 - 입고 처리 목록의 박스 수(그 출고번호 줄)를 Tracking별로 표시하고 오른쪽 위에 총 박스 수(아래 Tracking 건수), 박스 수만큼 체크칸. v1.15.0: 박스 수를 입고 처리 목록 조회 대신 로케이션 개수로 계산(추가 조회 없음, 실제 28개 Tracking에서 일치 확인). v1.16.0: 캡슐토이 세트는 파란색 표시 안 함(다른 세트상품만), 수량칸 아래 '×○pcs=○個' 표시 제거(잔코드 아래 옵션으로 확인). v1.16.1: -H(하프)는 수량칸 아래 '×○pcs=○個' 계속 표시, 잔코드 아래 옵션의 한국어 단위를 일본어로(1봉지30개입→1袋30個入). v1.17.0: 입고 담당자가 등록한 1세트 낱개수(구글시트 '세트낱개수' 탭)로 수량칸에 세트 수를 크게 표시(16個→1セット), 세트 배수가 아니면 ⚠端数 표시. v1.21.0: 같은 로케이션이 이어지면 JAN이 달라도 로케이션 칸을 하나로 묶어 표시(로케이션 순 정렬 기준도 개수 표기 빼고 로케이션 이름으로). v1.22.0: 아타리쿠지 세트기준 시트에서 기준등급을 빈칸(또는 0)으로 두면 접미사 없는 메인 잔코드 수량으로 세트수 계산. v1.23.0: 출고요청날짜가 오늘이 아니고 1일 이상 지난 출고건은 피킹리스트에 빨간 테두리·⏰経過日数 표시(선입선출).
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/shipping/packing*
 // @match        https://platform.co.jp/admin/shipping/packing*
@@ -861,6 +861,32 @@
             .join('<br>');
     }
 
+    // [v1.23.0] 출고요청날짜 → 오늘 기준 며칠 지났는지 (날짜만 비교, 시간 무시). 읽을 수 없으면 null
+    function daysSinceDate(text) {
+        const t = String(text || '');
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        let y, m, d;
+        let mt = t.match(/(\d{4})\s*[-\/.年]\s*(\d{1,2})\s*[-\/.月]\s*(\d{1,2})/);
+        if (mt) { y = +mt[1]; m = +mt[2]; d = +mt[3]; }
+        else {
+            mt = t.match(/(\d{1,2})\s*[-\/.月]\s*(\d{1,2})/);
+            if (!mt) return null;
+            y = today.getFullYear(); m = +mt[1]; d = +mt[2];
+            if (new Date(y, m - 1, d) > today) y -= 1; // 연도 없는 12/31 같은 날짜가 미래로 계산되지 않게
+        }
+        const dt = new Date(y, m - 1, d);
+        if (isNaN(dt.getTime()) || dt.getMonth() !== m - 1) return null;
+        return Math.round((today - dt) / 86400000);
+    }
+    // [v1.23.0] 출고요청날짜 칸 번호: 표 머리글에서 찾고, 못 찾으면 기존처럼 5번째 칸
+    function findReqDateCol(tr) {
+        const table = tr && tr.closest('table');
+        const ths = table ? Array.from(table.querySelectorAll('thead th, thead td')) : [];
+        const idx = ths.findIndex(th => /出庫依頼|出荷依頼|依頼日|출고\s*요청|요청\s*일/.test(th.innerText || ''));
+        return idx >= 0 ? idx + 1 : 5;
+    }
+
     async function startApiHarvest(checkedBoxes) {
         showOverlay(`🚀 데이터를 수집하여 이중 정렬 가공 중...`);
         const collectedGroups = [];
@@ -884,13 +910,14 @@
             const task = {
                 id: box.getAttribute('data-id'),
                 outNum: tr ? tr.querySelector('td:nth-child(4)')?.innerText.trim() || 'N/A' : 'N/A',
-                orderDate: tr ? tr.querySelector('td:nth-child(5)')?.innerText.trim() || '-' : '-',
+                orderDate: tr ? tr.querySelector('td:nth-child(' + findReqDateCol(tr) + ')')?.innerText.trim() || '-' : '-',
                 receiver: box.getAttribute('data-name') || '-',
                 type: box.getAttribute('data-type') || (tr && tr.innerText.includes('배송대행') ? 'delivery' : 'shop'),
                 isOcean: isOcean,
                 rowTracking: extractRowTrackingNo(tr),
                 originalIndex: i
             };
+            task.ageDays = daysSinceDate(task.orderDate); // [v1.23.0] 출고요청 후 지난 날수
             try {
                 const formData = new FormData();
                 formData.append('id', task.id);
@@ -1072,7 +1099,7 @@
                     for (let p = 0; p * ITEMS_PER_PAGE < pageItems.length; p++) {
                         collectedGroups.push({
                             isDelivery: isDeliveryTask, trkCount: trkCount, boxTotal: boxTotal, boxUnknown: boxUnknown,
-                            outNum: task.outNum, receiver: task.receiver, orderDate: task.orderDate,
+                            outNum: task.outNum, receiver: task.receiver, orderDate: task.orderDate, ageDays: task.ageDays,
                             requests: Array.from(reqSet),
                             requirementMsg: cleanMsg,
                             isOcean: task.isOcean,
@@ -1187,6 +1214,8 @@
             .watermark-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; opacity: 0.1; display: none; }
             .is-ocean .watermark-overlay { display: block; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='150' height='100'><text x='50%' y='50%' font-size='20' font-weight='900' fill='%23007bff' transform='rotate(-30, 75, 50)' text-anchor='middle'>OCEAN</text></svg>"); background-repeat: repeat; }
             .content-wrapper { position: relative; z-index: 1; }
+            .sheet.is-late { border: 6px solid #d00000; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            .late-badge { color:#fff; background:#d00000; font-weight:900; font-size:22px; margin-left:12px; padding:2px 12px; border-radius:5px; white-space:nowrap; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
             table { background-color: transparent !important; }
             tr { page-break-inside: avoid; }
             .kuji-banner { border:3px solid #d00; background:#fff4f4; padding:6px 10px; margin:0 0 8px 0; font-weight:900; font-size:15px; color:#000; display:flex; align-items:center; gap:10px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
@@ -1638,18 +1667,24 @@
                     const oceanLabel = g.isOcean ? '<div style="color:#007bff; font-weight:900; font-size:22px; margin-left:20px; border:3px solid #007bff; padding:2px 10px; border-radius:5px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">海運(OCEAN)</div>' : '';
                     const noInspLabel = (g.noInsp && g.noInsp.current) ? '<div style="color:#fff; background:#c62828; font-weight:900; font-size:20px; margin-left:12px; padding:2px 10px; border-radius:5px; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">無検品出荷</div>' : '';
                     const watermarkHtml = g.isOcean ? '<div class="watermark-overlay"></div>' : '';
+                    // [v1.23.0] 출고요청 후 1일 이상 지난 건: 빨간 테두리 + 경과일 배지 + 날짜 빨간색 (모든 페이지)
+                    const isLate = typeof g.ageDays === 'number' && g.ageDays >= 1;
+                    const lateLabel = isLate ? '<div class="late-badge">⏰ ' + g.ageDays + '日経過</div>' : '';
+                    const dateHtml = isLate
+                        ? '<span style="color:#fff; background:#d00000; padding:1px 6px; border-radius:3px; font-weight:900; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">出庫依頼: ' + g.orderDate + '</span>'
+                        : '<span>DATE: ' + g.orderDate + '</span>';
 
-                    html += '<div class="sheet ' + (g.isOcean ? 'is-ocean' : '') + '">' +
+                    html += '<div class="sheet ' + (g.isOcean ? 'is-ocean' : '') + (isLate ? ' is-late' : '') + '">' +
                                 watermarkHtml +
                                 '<div class="content-wrapper">' +
                                     '<div style="display:flex; justify-content:space-between; align-items:flex-start;">' +
                                         '<div style="flex:1;">' +
                                             '<div style="display:flex; align-items:center;">' +
                                                 '<h1 style="font-size:32px; margin:0; font-weight:900; letter-spacing:2px;">PICKING LIST</h1>' +
-                                                oceanLabel + noInspLabel +
+                                                oceanLabel + noInspLabel + lateLabel +
                                             '</div>' +
                                             '<div style="font-size:14px; margin-top:5px; font-weight:bold; color:#333;">' +
-                                                '<span style="margin-right:15px;">TO: '+g.receiver+'</span><span>DATE: '+g.orderDate+'</span>' +
+                                                '<span style="margin-right:15px;">TO: '+g.receiver+'</span>' + dateHtml +
                                             '</div>' +
                                             (g.pageNum === 1 && g.requirementMsg ? '<div style="margin-top:10px; font-size:14px; font-weight:bold; color:#d32f2f; white-space:pre-wrap; line-height:1.4; border-left:3px solid #d32f2f; padding-left:10px;">' + g.requirementMsg + '</div>' : '') +
                                         '</div>' +
