@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] JAN코드 화면 단축키 통합 (JAN이동 + Enter이동 + F1/F2/F3 + 합계패널 + JAN 6자리강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.7.1
+// @version      1.8.0
 // @description  jancode 페이지 통합본. 원본: A-1-9(JAN 검색이동) + A-1-6(Enter 행이동) + A-1-7(F3) + A-1-8(F1) + A-1-10(F2). v1.5.0: 입고 창에 세트상품 "1セット個数(1세트 낱개수)" 등록 칸 추가 → 구글시트 '세트낱개수' 탭에 저장, 피킹리스트·포장화면에 세트수로 표시됨
 // @author       물류팀
 // @match        https://www.platform.co.jp/admin/store/jancode*
@@ -90,6 +90,11 @@
  * - 수정 2: 실제로 움직였을 때만 기본 동작을 막음. 못 움직였으면 브라우저 기본 스크롤에 맡김
  *   (어떤 경우에도 "스크립트 때문에 아예 안 내려가는" 상황이 생기지 않게)
  * - 수정 3: 합계 패널 제목 옆에 버전(v1.7.1) 표시 → 각 PC에 최신본이 들어갔는지 바로 확인 가능
+ *
+ * [v1.8.0 변경 사항] "잔코드가 전부 일치하지 않아도 연속 숫자 6자리가 같으면 맨 위로" (데꼴 등 잔코드 미사용 업체)
+ * - 블록 10(신규): 스캔한 값과 완전 일치하는 줄이 없을 때, 연속된 숫자 6자리 이상이 같은 줄을
+ *   맨 위로 올리고 주황 테두리 + 수량 칸으로 커서 이동. 로케이션·수량은 입력하지 않음.
+ * - 완전 일치는 지금처럼 사이트가 처리(로케이션 입력 + 수량 추가). 6자리 미만이면 기존 "일치 없음" 안내.
  */
 
 (function() {
@@ -231,6 +236,96 @@
                         console.log("[JAN 이동] 스캔 성공: 수량 칸으로 이동했습니다.");
                     }
                 }, 400);
+            }, true);
+        })();
+
+        /* [블록 10] v1.8.0 — JAN 부분 일치(연속 숫자 6자리) 스캔
+         * 잔코드를 쓰지 않는 업체(특히 데꼴) 상품은 실물 바코드와 시스템 잔코드가 끝자리 등 일부만 같음.
+         * 사이트는 JAN이 "완전 일치"할 때만 줄을 맨 위로 올리고 로케이션·수량을 넣고,
+         * 아니면 "一致するJANコードが見つかりません"을 띄움.
+         * → 완전 일치하는 줄이 없고, 연속된 숫자 6자리 이상이 같은 줄이 있으면:
+         *   그 줄을 맨 위로 올리고 주황 테두리로 표시 + 수량 칸으로 커서 이동.
+         *   로케이션·수량은 입력하지 않음 (담당자가 직접 확인 후 입력).
+         *   후보가 여러 줄이면 많이 일치하는 순서로 모두 위로 올리고 개수를 안내.
+         * 완전 일치는 지금처럼 사이트가 처리. MAIN이 아닌 하위 상품 줄(main=2)은 후보에서 제외. */
+        (function janPartialMatchBlock() {
+            const MIN_RUN = 6;
+
+            // 두 값에서 "연속으로 같은 숫자"가 가장 길게 이어지는 길이
+            function longestDigitRun(a, b) {
+                let best = 0;
+                const prev = new Array(b.length + 1).fill(0);
+                for (let i = 1; i <= a.length; i++) {
+                    let diag = 0;
+                    for (let j = 1; j <= b.length; j++) {
+                        const tmp = prev[j];
+                        const ca = a[i - 1], cb = b[j - 1];
+                        prev[j] = (ca === cb && ca >= '0' && ca <= '9') ? diag + 1 : 0;
+                        if (prev[j] > best) best = prev[j];
+                        diag = tmp;
+                    }
+                }
+                return best;
+            }
+
+            function toast(msg) {
+                let el = document.getElementById('tm-jan-partial-toast');
+                if (!el) {
+                    el = document.createElement('div');
+                    el.id = 'tm-jan-partial-toast';
+                    el.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:2147483647;' +
+                        'background:#ea580c;color:#fff;font-weight:700;font-size:18px;padding:12px 24px;border-radius:8px;' +
+                        'box-shadow:0 4px 16px rgba(0,0,0,.3);white-space:pre-line;text-align:center;pointer-events:none;';
+                    document.body.appendChild(el);
+                }
+                el.textContent = msg;
+                el.style.display = 'block';
+                clearTimeout(el._t);
+                el._t = setTimeout(() => { el.style.display = 'none'; }, 4000);
+            }
+
+            window.addEventListener('keydown', function(e) {
+                if (e.key !== 'Enter') return;
+                const input = document.activeElement;
+                if (!input || input.id !== 'scan_jancode') return;
+                const scanned = String(input.value || '').trim();
+                if (!scanned) return;
+
+                const rows = Array.from(document.querySelectorAll('#scan-tbody tr'));
+                // 완전 일치가 있으면 사이트 기본 동작 그대로
+                if (rows.some(r => String(r.getAttribute('data-jancode')) === scanned)) return;
+
+                const candidates = rows
+                    .filter(r => String(r.getAttribute('data-main')) !== '2')
+                    .map(r => ({ row: r, run: longestDigitRun(scanned, String(r.getAttribute('data-jancode') || '')) }))
+                    .filter(c => c.run >= MIN_RUN)
+                    .sort((x, y) => y.run - x.run);
+                if (candidates.length === 0) return; // 사이트의 "일치하는 JAN 없음" 안내에 맡김
+
+                // 사이트 처리(로케이션·수량 입력, 불일치 알림)와 블록 1을 막음
+                e.preventDefault();
+                e.stopImmediatePropagation();
+
+                const tbody = document.getElementById('scan-tbody');
+                rows.forEach(r => { r.classList.remove('table-danger'); r.style.outline = ''; });
+                // 많이 일치하는 줄이 맨 위에 오도록 역순으로 올림
+                candidates.slice().reverse().forEach(c => tbody.insertBefore(c.row, tbody.firstChild));
+                candidates.forEach(c => {
+                    c.row.classList.add('table-danger');
+                    c.row.style.outline = '3px solid #ea580c';
+                });
+                try { if (typeof window.renumberRows === 'function') window.renumberRows(); } catch (_) {}
+
+                const top = candidates[0].row;
+                const qtyInput = top.querySelector('input.quantity:not([readonly])') ||
+                                 top.querySelector('input[type="number"]:not([readonly])');
+                input.value = '';
+                if (qtyInput) { focusNoScroll(qtyInput); qtyInput.select(); }
+
+                toast(candidates.length === 1
+                    ? `부분 일치 (숫자 ${candidates[0].run}자리) — 맨 위로 올렸습니다\n로케이션은 입력되지 않았습니다. 상품 확인 후 수량을 입력하세요`
+                    : `부분 일치 후보 ${candidates.length}개 — 맨 위로 올렸습니다\n상품을 확인하고 맞는 줄에 수량을 입력하세요`);
+                console.log('[JAN 부분일치]', scanned, candidates.map(c => [c.row.getAttribute('data-jancode'), c.run]));
             }, true);
         })();
 
@@ -447,7 +542,7 @@
                 min-width: 230px; font-family: inherit;
             `;
             panel.innerHTML = `
-                <div style="font-weight:700; color:#93c5fd; margin-bottom:4px;">📦 입고 합계 (실시간) <span style="font-size:10px;color:#6b7280;font-weight:400;">v1.7.1</span></div>
+                <div style="font-weight:700; color:#93c5fd; margin-bottom:4px;">📦 입고 합계 (실시간) <span style="font-size:10px;color:#6b7280;font-weight:400;">v1.8.0</span></div>
                 <div>입력 종류: <b id="tm-jt-kinds">0</b> 종 · 수량: <b id="tm-jt-qty">0</b></div>
                 <div style="font-size:16px; margin-top:2px;">매입 금액: <b id="tm-jt-amount" style="color:#fde68a;">0</b> 円</div>
                 <div style="font-size:11px; color:#9ca3af;">(수량 × 매입 가격 · 세금 미포함)</div>
