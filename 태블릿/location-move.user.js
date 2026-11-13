@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [物流] ロケーション移動（一括編集・印刷）
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      9.7
+// @version      9.8
 // @description  入荷トラッキング画面：ロケーション一括移動・ラベル印刷。v9.0 スキャンだけで追加・ロケーションスキャン指定・確認ダイアログ削減・タブレット対応
 // @author       物流チーム
 // @match        https://www.platform.co.jp/admin/store/trackingno*
@@ -14,7 +14,8 @@
 // ==/UserScript==
 
 /* =====================================================================
- *  [2] 로케이션 이동 v9.6  — /admin/store/trackingno
+ *  [2] 로케이션 이동 v9.8  — /admin/store/trackingno
+ *  v9.8 (2026-11-13): 포장목록 2분마다 자동 조회 삭제 → 화면 열 때·이동 창 열 때만 조회 (서버 부하 줄이기)
  * ===================================================================== */
 
 (function() {
@@ -88,113 +89,57 @@
     // =========================================================================
     // [데이터 수집 엔진 1] 포장 명세서 데이터 백그라운드 스크래핑 (LH 번호 확보용)
     // =========================================================================
-    function initShippingSync() {
-        console.log("[Tampermonkey] 出荷マッチングDB同期エンジン起動...");
+    // [v9.8] 2분마다 포장목록 전체를 숨은 창(iframe)으로 불러오던 방식 → 필요할 때만 가볍게 조회
+    //  - 화면을 열 때 1번 + 이동 창(一括編集)을 열 때 1번만 조회 (마지막 조회 후 60초 안에는 다시 조회하지 않음)
+    //  - 숨은 창 대신 fetch로 읽음: 포장 화면용 스크립트·이미지가 뒤에서 같이 실행되지 않아 서버·PC 부담이 줄어듦
+    //  - 회원번호를 표 전체의 첫 줄에서만 읽던 예비 방식의 오류 수정 (각 줄에서 읽음)
+    let shippingSyncedAt = 0;
+    let isShippingSyncing = false;
+    const SHIPPING_SYNC_MIN_GAP_MS = 60 * 1000;
+    async function initShippingSync(force = false) {
+        if (isShippingSyncing) return;
+        if (!force && shippingSyncedAt && Date.now() - shippingSyncedAt < SHIPPING_SYNC_MIN_GAP_MS) return;
+        isShippingSyncing = true;
+        console.log("[Tampermonkey] 出荷マッチングDB同期...");
+        try {
+            const res = await fetch(window.location.origin + '/admin/shipping/packing?pagesize=1000', { credentials: 'include', cache: 'no-store' });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+            const rows = doc.querySelectorAll('#packingListTbody tr');
+            const tempDb = [];
+            rows.forEach(row => {
+                const chk = row.querySelector('.sub_checkbox');
+                if (!chk) return;
+                let trackingNo = String(chk.getAttribute('data-trackingno') || '').trim();
+                const trackingLink = row.querySelector('.show_tracking_page');
+                if (!trackingNo && trackingLink) trackingNo = String(trackingLink.textContent || '').trim();
 
-        const iframe = document.createElement('iframe');
-        iframe.src = window.location.origin + '/admin/shipping/packing?pagesize=1000';
-        iframe.style.display = 'none';
-        iframe.id = 'tampermonkey-shipping-frame';
+                let deliveryNo = "";
+                for (const cell of row.querySelectorAll('td')) {
+                    const matchLH = String(cell.textContent || '').match(/(LH|LS|OH)\d+/i);
+                    if (matchLH) { deliveryNo = matchLH[0].toUpperCase(); break; }
+                }
 
-        iframe.onload = function() {
-            try {
-                const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
-                const rows = iframeDoc.querySelectorAll('#packingListTbody tr');
+                let userId = "";
+                const userLink = row.querySelector('.show-tooltip');
+                if (userLink) {
+                    const match = String(userLink.textContent || '').trim().match(/\d+/);
+                    if (match) userId = match[0];
+                }
 
-                let tempDb = [];
-                rows.forEach(row => {
-                    const chk = row.querySelector('.sub_checkbox');
-                    if (chk) {
-                        let trackingNo = String(chk.getAttribute('data-trackingno') || '').trim();
-                        const trackingLink = row.querySelector('.show_tracking_page');
-                        if (!trackingNo && trackingLink) {
-                            trackingNo = trackingLink.innerText.trim();
-                        }
-
-                        let deliveryNo = "";
-                        const cells = row.querySelectorAll('td');
-                        for (let cell of cells) {
-                            const text = cell.innerText || "";
-                            const matchLH = text.match(/(LH|LS|OH)\d+/i);
-                            if (matchLH) {
-                                deliveryNo = matchLH[0].toUpperCase();
-                                break;
-                            }
-                        }
-
-                        let userId = "";
-                        const userLink = row.querySelector('.show-tooltip');
-                        if (userLink) {
-                            const userText = userLink.innerText.trim();
-                            const match = userText.match(/\d+/);
-                            if (match) userId = match[0];
-                        }
-
-                        if (trackingNo && deliveryNo) {
-                            tempDb.push({
-                                tracking_no: trackingNo,
-                                delivery_no: deliveryNo,
-                                user_id: userId
-                            });
-                        }
-                    }
-                });
-
-                shippingDatabase = tempDb;
-                console.log("[Tampermonkey] マッチングDB構築成功！ データ数:", shippingDatabase.length);
-
-                const oldFrame = document.getElementById('tampermonkey-shipping-frame');
-                if (oldFrame && oldFrame !== iframe) oldFrame.remove();
-            } catch (e) {
-                console.error("[Tampermonkey] iframeがセキュリティポリシーでブロック、バックアップfetchに切替", e);
-                fetchFallback();
-            }
-        };
-
-        const checkExist = document.getElementById('tampermonkey-shipping-frame');
-        if (checkExist) checkExist.remove();
-        document.body.appendChild(iframe);
-    }
-
-    function fetchFallback() {
-        const targetUrl = window.location.origin + '/admin/shipping/packing?pagesize=1000';
-        fetch(targetUrl)
-            .then(response => response.text())
-            .then(html => {
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(html, 'text/html');
-                const rows = doc.querySelectorAll('#packingListTbody tr');
-                let tempDb = [];
-                rows.forEach(row => {
-                    const chk = row.querySelector('.sub_checkbox');
-                    if (chk) {
-                        let trackingNo = String(chk.getAttribute('data-trackingno') || '').trim();
-                        const trackingLink = row.querySelector('.show_tracking_page');
-                        if (!trackingNo && trackingLink) trackingNo = trackingLink.innerText.trim();
-
-                        let deliveryNo = "";
-                        const cells = row.querySelectorAll('td');
-                        for (let cell of cells) {
-                            const text = cell.innerText || "";
-                            const matchLH = text.match(/(LH|LS|OH)\d+/i);
-                            if (matchLH) {
-                                deliveryNo = matchLH[0].toUpperCase();
-                                break;
-                            }
-                        }
-                        let userId = "";
-                        const userLink = doc.querySelector('.show-tooltip');
-                        if (userLink) {
-                            const match = userLink.innerText.trim().match(/\d+/);
-                            if (match) userId = match[0];
-                        }
-                        if (trackingNo && deliveryNo) {
-                            tempDb.push({ tracking_no: trackingNo, delivery_no: deliveryNo, user_id: userId });
-                        }
-                    }
-                });
-                shippingDatabase = tempDb;
-            }).catch(err => console.log("Fallback 読み込み失敗", err));
+                if (trackingNo && deliveryNo) {
+                    tempDb.push({ tracking_no: trackingNo, delivery_no: deliveryNo, user_id: userId });
+                }
+            });
+            shippingDatabase = tempDb;
+            shippingSyncedAt = Date.now();
+            console.log("[Tampermonkey] マッチングDB構築成功！ データ数:", shippingDatabase.length);
+        } catch (e) {
+            // 실패해도 이전에 읽어 둔 데이터는 그대로 사용 (라벨의 LH는 입고 목록 줄에 적힌 값이 우선)
+            console.error("[Tampermonkey] 出荷マッチングDB同期失敗", e);
+        } finally {
+            isShippingSyncing = false;
+        }
     }
 
     // =========================================================================
@@ -1676,6 +1621,7 @@
 
         // 모달창을 열기 직전 실시간 로케이션 가용 목록 비동기 동기화 구동
         initLocationTrackingSync(true); // 창 열기 전 강제 렌더링 반영
+        initShippingSync(); // [v9.8] 창을 열 때 출고(LH) 매칭 데이터 최신화 (60초 안에 읽었으면 생략)
         // 백그라운드 고속 전수 데이터 캐싱 동기화 구동 (전체 페이지 즉시 검색 지원)
         startPreFetchingAllPages();
 
@@ -2085,9 +2031,9 @@
     });
 
     // 동기화 엔진 초기 자동 가동
-    initShippingSync();
+    initShippingSync(true);
     initLocationTrackingSync();
-    setInterval(initShippingSync, 120000);
+    // [v9.8] 2분마다 반복 조회(setInterval) 삭제 — 이동 창을 열 때 다시 조회함
 
     } // __main
 
