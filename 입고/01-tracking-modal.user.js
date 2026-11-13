@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] 트래킹넘버 모달 통합 (마스터패치본 + 회원명고정 + 하이픈표시 + JAN강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.5.2
+// @version      1.5.3
 // @description  입고 처리 모달(trackingno) + 송장번호 검증(잘못된 바코드 입고 방지) 및 라벨 인쇄(locationlabel) 화면 통합본. 원본: A-1-13(베이스) + A-1-2(회원명 고정) + A-1-3(하이픈 표시) + A-1-12 중 입고 JAN강조 발췌
 // @author       물류팀
 // @match        https://platform.aispel.com/admin/store/trackingno*
@@ -74,6 +74,10 @@
  *    흑백 프린터용으로 속이 빈 테두리 글씨를 라벨 뒤에 비스듬히 깔고, 업체명을 작게 함께 표시.
  *    스캔 입고 라벨과 목록 Print(재출력) 라벨 모두 적용. QR 부분은 흰 바탕이라 인식에 영향 없음.
  *    업체 추가/삭제는 아래 END_USER_COMPANIES 목록만 고치면 됨.
+ *
+ *  v1.5.3 수정 사항 (2026-11-13)
+ *  - [블록 5] Japan Post(우체국) 선택 시 숫자 10자리 미만은 무조건 입고 불가.
+ *    우체국 송장에는 바코드가 여러 개라 짧은 바코드를 잘못 찍는 일이 많음 → 같은 값 재스캔으로도 통과 안 됨.
  *
  *  v1.5.2 수정 사항 (2026-11-13)
  *  - [블록 5] 마스다 다이즈미 건 형식(회원번호4자리 + MDM + 숫자4자리, 예: 2937MDM1029)은
@@ -978,6 +982,7 @@
      *  그 외 회사   : 숫자 6~14자리 / 배송회사 미선택 : 검사 안 함
      *  사입처(도매처) 선택 시 : 문자가 섞인 값(영문 품번 등)은 검사 안 함 (v1.5.1)
      *  마스다 다이즈미 건(○○○○MDM○○○○) : 검사 안 함 (v1.5.2)
+     *  Japan Post 숫자 10자리 미만 : 무조건 입고 불가, 재스캔으로도 통과 안 됨 (v1.5.3)
      * ------------------------------------------------------------ */
     (function trackingValidatorBlock() {
 
@@ -1022,6 +1027,11 @@
             if (hasSupplier && !/^\d+$/.test(v)) return { ok: true };
             // [v1.5.2] 마스다 다이즈미 건: 회원번호4자리 + MDM + 숫자4자리 (예: 2937MDM1029) — 배송회사와 상관없이 통과
             if (/^\d{4}MDM\d{4}$/.test(v)) return { ok: true };
+            // [v1.5.3] 우체국은 송장에 바코드가 여러 개 붙어 있음 → 숫자 10자리 미만은 무조건 입고 불가 (재스캔으로도 통과 안 됨)
+            if (id === '3' && /^\d{1,9}$/.test(v)) {
+                return { ok: false, hard: true, value: v,
+                    reason: `Japan Post 송장번호가 아닙니다 (숫자 ${v.length}자리).\n우체국 송장에는 바코드가 여러 개 있습니다. 송장번호 바코드를 스캔하세요.` };
+            }
 
             let ok;
             let expect;
@@ -1125,7 +1135,7 @@
             if (result.ok) { pendingValue = ''; return; }
 
             const key = normalize(raw);
-            if (pendingValue === key && Date.now() - pendingAt < CONFIRM_WINDOW_MS) {
+            if (!result.hard && pendingValue === key && Date.now() - pendingAt < CONFIRM_WINDOW_MS) {
                 // 같은 값을 다시 스캔 → 확인한 것으로 보고 통과
                 pendingValue = '';
                 console.log('[송장검증] 재스캔 확인으로 입고 진행:', raw, result.reason);
@@ -1136,12 +1146,14 @@
             // 입고 차단
             event.preventDefault();
             event.stopImmediatePropagation();
-            pendingValue = key;
+            pendingValue = result.hard ? '' : key;
             pendingAt = Date.now();
             console.warn('[송장검증] 입고 차단:', raw, result.reason);
             beep();
             showOverlay('error', '⛔ 입고 중지',
-                result.reason + '\n\n송장 바코드를 다시 스캔하세요.\n(이 값이 맞다면 같은 값을 한 번 더 스캔하면 입고됩니다)', raw);
+                result.reason + (result.hard
+                    ? '\n\n이 값은 입고할 수 없습니다.'
+                    : '\n\n송장 바코드를 다시 스캔하세요.\n(이 값이 맞다면 같은 값을 한 번 더 스캔하면 입고됩니다)'), raw);
             input.value = '';
             input.focus();
         }, true);
