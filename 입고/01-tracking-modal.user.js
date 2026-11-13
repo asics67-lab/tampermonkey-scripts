@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [입고] 트래킹넘버 모달 통합 (마스터패치본 + 회원명고정 + 하이픈표시 + JAN강조)
 // @namespace    https://github.com/asics67-lab/tampermonkey-scripts
-// @version      1.5.0
+// @version      1.5.1
 // @description  입고 처리 모달(trackingno) + 송장번호 검증(잘못된 바코드 입고 방지) 및 라벨 인쇄(locationlabel) 화면 통합본. 원본: A-1-13(베이스) + A-1-2(회원명 고정) + A-1-3(하이픈 표시) + A-1-12 중 입고 JAN강조 발췌
 // @author       물류팀
 // @match        https://platform.aispel.com/admin/store/trackingno*
@@ -74,6 +74,10 @@
  *    흑백 프린터용으로 속이 빈 테두리 글씨를 라벨 뒤에 비스듬히 깔고, 업체명을 작게 함께 표시.
  *    스캔 입고 라벨과 목록 Print(재출력) 라벨 모두 적용. QR 부분은 흰 바탕이라 인식에 영향 없음.
  *    업체 추가/삭제는 아래 END_USER_COMPANIES 목록만 고치면 됨.
+ *
+ *  v1.5.1 수정 사항 (2026-11-13)
+ *  - [블록 5] 사입처(도매처)를 선택한 입고는 송장번호 대신 영문·품번을 적을 수밖에 없으므로,
+ *    문자가 섞인 값은 검사하지 않고 통과. 숫자만으로 된 값은 계속 검사(JAN·상품 바코드 오스캔 방지).
  *
  *  v1.5.0 수정 사항 (2026-11-13)
  *  - [블록 5] 송장번호 검증 추가: 선택한 배송회사의 송장 형식(자릿수·체크디지트)과 맞지 않는 값을
@@ -968,6 +972,7 @@
      *  5 Fukuyama   : 숫자 11자리 (예외 번호가 있어 체크디지트는 검사 안 함)
      *  7 Amazon     : DA + 숫자 10자리
      *  그 외 회사   : 숫자 6~14자리 / 배송회사 미선택 : 검사 안 함
+     *  사입처(도매처) 선택 시 : 문자가 섞인 값(영문 품번 등)은 검사 안 함 (v1.5.1)
      * ------------------------------------------------------------ */
     (function trackingValidatorBlock() {
 
@@ -1001,12 +1006,15 @@
         }
 
         /** @returns {{ok:boolean, reason?:string}} */
-        function validateTracking(companyId, raw) {
+        function validateTracking(companyId, raw, hasSupplier) {
             const id = String(companyId || '');
             if (!id) return { ok: true };
             let v = normalize(raw);
             if (id === '5' && /^\d{12,}$/.test(v)) v = v.substring(0, 11);
             if (!v) return { ok: true };
+            // [v1.5.1] 사입처(도매처)를 고른 입고는 송장 대신 영문·품번을 직접 적는 경우가 있음
+            //          → 숫자만으로 된 값(송장·JAN 오스캔 가능성)만 검사하고, 문자가 섞인 값은 통과
+            if (hasSupplier && !/^\d+$/.test(v)) return { ok: true };
 
             let ok;
             let expect;
@@ -1104,7 +1112,9 @@
             const sel = document.getElementById('modal_delivery_company');
             const companyId = sel ? sel.value : '';
 
-            const result = validateTracking(companyId, raw);
+            const supSel = document.getElementById('modal_search_supplier');
+            const hasSupplier = !!(supSel && supSel.value);
+            const result = validateTracking(companyId, raw, hasSupplier);
             if (result.ok) { pendingValue = ''; return; }
 
             const key = normalize(raw);
